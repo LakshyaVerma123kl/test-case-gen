@@ -1,6 +1,6 @@
 const express = require('express');
 const { validateSession, githubClients } = require('./auth');
-const geminiService = require('../services/geminiService');
+const geminiService = require('../services/geminiService'); // Fix: Properly import geminiService
 const FileAnalysisService = require('../services/fileAnalysis');
 const router = express.Router();
 
@@ -19,96 +19,40 @@ const getGitHubClient = (sessionId) => {
   return client;
 };
 
-// Generate test case summaries (for frontend compatibility)
-router.post('/generate-summaries', async (req, res) => {
+// Generate test cases for specific files
+router.post('/generate', async (req, res) => {
   try {
-    const { files, language = 'auto', testFramework = 'auto' } = req.body;
+    const { repository, files, testType = 'unit', framework, options = {} } = req.body;
 
-    if (!files || !Array.isArray(files) || files.length === 0) {
+    if (!repository || !files || files.length === 0) {
       return res.status(400).json({
-        error: 'Files array is required and cannot be empty',
+        error: 'Repository and files are required',
       });
     }
 
-    // Validate files structure
-    const invalidFiles = files.filter((file) => !file.path || !file.content);
-    if (invalidFiles.length > 0) {
+    // Validate files array
+    if (!Array.isArray(files) || files.some((file) => !file.path || !file.content)) {
       return res.status(400).json({
-        error: 'All files must have path and content properties',
+        error: 'Files must be an array with path and content for each file',
       });
     }
 
     // Generate test cases using Gemini
     const testCases = await geminiService.generateTestCases(files, {
-      types: ['unit'],
-      complexity: 'medium',
-      framework: testFramework,
-    });
-
-    // Generate summary
-    const summary = await geminiService.generateSummary(testCases, {
-      repository: files[0]?.repository || 'Unknown',
-      files: files.length,
-      language,
-      testFramework,
+      repository,
+      testType,
+      framework,
+      options,
     });
 
     res.json({
       success: true,
-      testCases,
-      summary,
-      metadata: {
-        filesAnalyzed: files.length,
-        language,
-        testFramework,
-        generatedAt: new Date().toISOString(),
-      },
-    });
-  } catch (error) {
-    console.error('Error generating test case summaries:', error);
-    res.status(500).json({
-      error: 'Failed to generate test case summaries',
-      message: error.message,
-    });
-  }
-});
-
-// Generate test cases for specific files
-router.post('/generate', async (req, res) => {
-  try {
-    const { files, config = {} } = req.body;
-
-    if (!files || !Array.isArray(files) || files.length === 0) {
-      return res.status(400).json({
-        error: 'Files array is required and cannot be empty',
-      });
-    }
-
-    // Validate files array
-    const invalidFiles = files.filter((file) => !file.path || !file.content);
-    if (invalidFiles.length > 0) {
-      return res.status(400).json({
-        error: 'All files must have path and content properties',
-      });
-    }
-
-    // Set default config
-    const testConfig = {
-      types: config.types || ['unit'],
-      complexity: config.complexity || 'medium',
-      framework: config.framework || 'auto',
-      ...config,
-    };
-
-    // Generate test cases using Gemini
-    const testCases = await geminiService.generateTestCases(files, testConfig);
-
-    res.json({
-      success: true,
+      repository,
       testCases,
       metadata: {
         filesAnalyzed: files.length,
-        ...testConfig,
+        testType,
+        framework,
         generatedAt: new Date().toISOString(),
       },
     });
@@ -189,11 +133,12 @@ router.post('/generate/repository', async (req, res) => {
 
     // Generate test cases
     const testCases = await geminiService.generateTestCases(validFileContents, {
-      types: [testType],
+      repository: { owner, repo, branch },
+      testType,
       framework: framework || analysisResult.testStrategy.testFramework,
       projectStructure: analysisResult.projectStructure,
       testStrategy: analysisResult.testStrategy,
-      ...options,
+      options,
     });
 
     res.json({
@@ -263,8 +208,6 @@ router.post('/generate/file', async (req, res) => {
 
     // Generate test cases
     const testCases = await geminiService.generateTestCases([file], {
-      types: [testType],
-      framework,
       repository: {
         owner,
         repo,
@@ -272,7 +215,9 @@ router.post('/generate/file', async (req, res) => {
         language: repoData.language,
         languages,
       },
-      ...options,
+      testType,
+      framework,
+      options,
     });
 
     res.json({
@@ -301,127 +246,10 @@ router.post('/generate/file', async (req, res) => {
   }
 });
 
-// Generate summary for test cases
-router.post('/summary', async (req, res) => {
+// Get test generation suggestions
+router.post('/suggestions', async (req, res) => {
   try {
-    const { testCases, metadata = {} } = req.body;
-
-    if (!testCases || !Array.isArray(testCases)) {
-      return res.status(400).json({
-        error: 'Test cases array is required',
-      });
-    }
-
-    const summary = await geminiService.generateSummary(testCases, metadata);
-
-    res.json({
-      success: true,
-      summary,
-    });
-  } catch (error) {
-    console.error('Error generating summary:', error);
-    res.status(500).json({
-      error: 'Failed to generate summary',
-      message: error.message,
-    });
-  }
-});
-
-// Get test case metrics
-router.post('/metrics', async (req, res) => {
-  try {
-    const { testCases } = req.body;
-
-    if (!testCases || !Array.isArray(testCases)) {
-      return res.status(400).json({
-        error: 'Test cases array is required',
-      });
-    }
-
-    // Calculate basic metrics
-    const metrics = {
-      total: testCases.length,
-      byType: {},
-      byPriority: {},
-      byFile: {},
-      complexity: {
-        low: 0,
-        medium: 0,
-        high: 0,
-      },
-      estimatedExecutionTime: testCases.length * 2, // 2 minutes per test case
-    };
-
-    testCases.forEach((tc) => {
-      // Count by type
-      metrics.byType[tc.type] = (metrics.byType[tc.type] || 0) + 1;
-
-      // Count by priority
-      metrics.byPriority[tc.priority] = (metrics.byPriority[tc.priority] || 0) + 1;
-
-      // Count by file
-      metrics.byFile[tc.file] = (metrics.byFile[tc.file] || 0) + 1;
-
-      // Estimate complexity based on code length
-      const codeLength = tc.code?.length || 0;
-      if (codeLength < 200) {
-        metrics.complexity.low++;
-      } else if (codeLength < 500) {
-        metrics.complexity.medium++;
-      } else {
-        metrics.complexity.high++;
-      }
-    });
-
-    res.json({
-      success: true,
-      metrics,
-    });
-  } catch (error) {
-    console.error('Error calculating metrics:', error);
-    res.status(500).json({
-      error: 'Failed to calculate metrics',
-      message: error.message,
-    });
-  }
-});
-
-// Generate test code (for compatibility)
-router.post('/generate-code', async (req, res) => {
-  try {
-    const fileData = req.body;
-
-    if (!fileData || !fileData.content) {
-      return res.status(400).json({
-        error: 'File data with content is required',
-      });
-    }
-
-    // Convert single file to array format for consistency
-    const files = Array.isArray(fileData) ? fileData : [fileData];
-
-    const testCases = await geminiService.generateTestCases(files, {
-      types: ['unit'],
-      complexity: 'medium',
-    });
-
-    res.json({
-      success: true,
-      testCases,
-    });
-  } catch (error) {
-    console.error('Error generating test code:', error);
-    res.status(500).json({
-      error: 'Failed to generate test code',
-      message: error.message,
-    });
-  }
-});
-
-// Recommend test framework
-router.post('/recommend-framework', async (req, res) => {
-  try {
-    const { files } = req.body;
+    const { files, projectStructure } = req.body;
 
     if (!files || !Array.isArray(files)) {
       return res.status(400).json({
@@ -429,29 +257,42 @@ router.post('/recommend-framework', async (req, res) => {
       });
     }
 
-    // Analyze files to recommend framework
+    // Analyze files and get suggestions
     const analysis = fileAnalysisService.analyzeRepositoryStructure(files);
-    const testStrategy = fileAnalysisService.getTestGenerationStrategy(analysis.projectStructure);
+    const testStrategy = fileAnalysisService.getTestGenerationStrategy(
+      projectStructure || analysis.projectStructure
+    );
+
+    // Get AI suggestions for test improvement
+    const suggestions = await geminiService.generateSummary([], {
+      projectStructure: analysis.projectStructure,
+      testStrategy,
+      existingTests: analysis.testFiles,
+      sourceFiles: analysis.sourceFiles,
+    });
 
     res.json({
       success: true,
-      recommendation: {
-        framework: testStrategy.testFramework,
-        language: analysis.projectStructure.language,
-        projectType: analysis.projectStructure.type,
-        testDirectory: testStrategy.testDirectory,
-        testFilePattern: testStrategy.testFilePattern,
-        mockingLibrary: testStrategy.mockingLibrary,
-      },
       analysis: {
         ...analysis,
         languages: Array.from(analysis.languages),
       },
+      testStrategy,
+      suggestions,
+      recommendations: {
+        priority: 'high',
+        actions: [
+          `Set up ${testStrategy.testFramework} testing framework`,
+          `Create ${testStrategy.testDirectory} directory`,
+          `Follow ${testStrategy.testFilePattern} naming convention`,
+          `Use ${testStrategy.mockingLibrary} for mocking`,
+        ],
+      },
     });
   } catch (error) {
-    console.error('Error recommending framework:', error);
+    console.error('Error getting test suggestions:', error);
     res.status(500).json({
-      error: 'Failed to recommend test framework',
+      error: 'Failed to get test suggestions',
       message: error.message,
     });
   }
