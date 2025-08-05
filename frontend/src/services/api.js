@@ -126,6 +126,8 @@ export const authenticateGitHub = async (token) => {
             response.error || response.message || "Authentication failed"
           );
         }
+        console.log("✅ GitHub authentication successful");
+        return response;
       }
       // Check for error field even if success is not present
       else if (response.error) {
@@ -137,17 +139,27 @@ export const authenticateGitHub = async (token) => {
           response.message || response.error || "Authentication failed"
         );
       }
-      // If response has user data, consider it successful
-      else if (response.user || response.sessionId || response.data) {
+      // If response has user data, consider it successful and normalize the response
+      else if (response.user || response.sessionId) {
         console.log("✅ GitHub authentication successful");
-        return response;
+        // Normalize the response to include success field for compatibility
+        return {
+          success: true,
+          user: response.user,
+          sessionId: response.sessionId,
+          expiresIn: response.expiresIn,
+          ...response,
+        };
       }
     }
 
-    // If we get here and have a response, assume success
+    // If we get here and have a response, assume success and normalize
     if (response) {
       console.log("✅ GitHub authentication successful");
-      return response;
+      return {
+        success: true,
+        ...response,
+      };
     }
 
     // No response or invalid response
