@@ -115,12 +115,43 @@ export const authenticateGitHub = async (token) => {
       token: cleanToken,
     });
 
-    if (!response.success) {
-      throw new Error(response.error || "Authentication failed");
+    console.log("🔍 Auth response:", response);
+
+    // Handle different response formats
+    if (response && typeof response === "object") {
+      // Check for explicit success field
+      if (response.hasOwnProperty("success")) {
+        if (!response.success) {
+          throw new Error(
+            response.error || response.message || "Authentication failed"
+          );
+        }
+      }
+      // Check for error field even if success is not present
+      else if (response.error) {
+        throw new Error(response.error);
+      }
+      // Check for common error indicators
+      else if (response.status === "error" || response.ok === false) {
+        throw new Error(
+          response.message || response.error || "Authentication failed"
+        );
+      }
+      // If response has user data, consider it successful
+      else if (response.user || response.sessionId || response.data) {
+        console.log("✅ GitHub authentication successful");
+        return response;
+      }
     }
 
-    console.log("✅ GitHub authentication successful");
-    return response;
+    // If we get here and have a response, assume success
+    if (response) {
+      console.log("✅ GitHub authentication successful");
+      return response;
+    }
+
+    // No response or invalid response
+    throw new Error("Invalid response from authentication server");
   } catch (error) {
     console.error("❌ GitHub authentication failed:", error.message);
     throw error;
