@@ -188,15 +188,20 @@ export const getUserRepositories = async (sessionId) => {
 };
 
 export const getRepositoryTree = async (
-  owner,
-  repo,
+  repoFullName,
   sessionId,
   path = "",
   recursive = false
 ) => {
   try {
-    if (!owner || !repo || !sessionId) {
-      throw new Error("Owner, repository name, and session ID are required");
+    if (!repoFullName || !sessionId) {
+      throw new Error("Repository name and session ID are required");
+    }
+
+    // Split the full name to get owner and repo
+    const [owner, repo] = repoFullName.split("/");
+    if (!owner || !repo) {
+      throw new Error("Invalid repository format. Expected 'owner/repo'");
     }
 
     const response = await api.get(`/github/repos/${owner}/${repo}/tree`, {
@@ -204,7 +209,7 @@ export const getRepositoryTree = async (
       headers: { Authorization: `Bearer ${sessionId}` },
     });
 
-    return response;
+    return response.tree || response; // Handle different response formats
   } catch (error) {
     console.error("❌ Failed to fetch repository tree:", error.message);
     throw error;
@@ -263,8 +268,10 @@ export const createPullRequest = async (owner, repo, sessionId, prData) => {
 // ─── TEST CASE FUNCTIONS ────────────────────────────────
 //
 
-export const generateTestCases = async (sessionId, files, config = {}) => {
+export const generateTestCases = async (config) => {
   try {
+    const { sessionId, files, ...restConfig } = config;
+
     if (!sessionId) {
       throw new Error("Session ID is required");
     }
@@ -277,7 +284,7 @@ export const generateTestCases = async (sessionId, files, config = {}) => {
 
     const response = await api.post(
       "/testcases/generate",
-      { files, ...config },
+      { files, ...restConfig },
       {
         headers: { Authorization: `Bearer ${sessionId}` },
         timeout: 120000, // 2 minutes for AI generation
@@ -402,6 +409,90 @@ export const getTestTypes = async () => {
 };
 
 //
+// ─── SUMMARY FUNCTIONS ─────────────────────────────────
+//
+
+export const generateTestCaseSummary = async (config) => {
+  try {
+    const { sessionId, testCases, repository, files } = config;
+
+    if (!sessionId) {
+      throw new Error("Session ID is required");
+    }
+
+    const response = await api.post(
+      "/testcases/summary",
+      { testCases, repository, files },
+      {
+        headers: { Authorization: `Bearer ${sessionId}` },
+        timeout: 60000, // 1 minute for summary generation
+      }
+    );
+
+    return response;
+  } catch (error) {
+    console.error("❌ Failed to generate summary:", error.message);
+    throw error;
+  }
+};
+
+export const getTestCaseMetrics = async (sessionId, testCases) => {
+  try {
+    if (!sessionId) {
+      throw new Error("Session ID is required");
+    }
+
+    if (!testCases || !Array.isArray(testCases)) {
+      throw new Error("Test cases array is required");
+    }
+
+    const response = await api.post(
+      "/testcases/metrics",
+      { testCases },
+      {
+        headers: { Authorization: `Bearer ${sessionId}` },
+        timeout: 30000, // 30 seconds for metrics calculation
+      }
+    );
+
+    return response;
+  } catch (error) {
+    console.error("❌ Failed to get test case metrics:", error.message);
+    throw error;
+  }
+};
+
+export const exportSummaryReport = async ({
+  testCases,
+  summary,
+  metrics,
+  repository,
+}) => {
+  try {
+    const reportData = {
+      metadata: {
+        repository,
+        generatedAt: new Date().toISOString(),
+        totalTestCases: testCases.length,
+      },
+      testCases,
+      summary,
+      metrics,
+    };
+
+    const filename = `test-summary-${repository || "project"}-${
+      new Date().toISOString().split("T")[0]
+    }.json`;
+
+    await downloadTestCasesAsJSON(reportData, filename);
+    console.log("✅ Summary report exported successfully");
+  } catch (error) {
+    console.error("❌ Failed to export summary report:", error.message);
+    throw error;
+  }
+};
+
+//
 // ─── UTILITY FUNCTIONS ──────────────────────────────────
 //
 
@@ -427,9 +518,13 @@ export const processSelectedFiles = async (selectedFiles, sessionId) => {
     try {
       console.log(`📄 Fetching content for ${file.path}...`);
 
+      // Extract owner and repo from the file object
+      const owner = file.owner;
+      const repo = file.repo;
+
       const fileContent = await getFileContent(
-        file.owner,
-        file.repo,
+        owner,
+        repo,
         file.path,
         sessionId
       );
