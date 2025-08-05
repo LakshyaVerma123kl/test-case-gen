@@ -1,75 +1,190 @@
 import axios from "axios";
 
+// Get API URL from environment variables
 const API_BASE_URL =
   import.meta.env.VITE_API_URL || "http://localhost:5000/api";
 
-// Axios instance
+console.log("🌐 API Base URL:", API_BASE_URL);
+
+// Axios instance with improved error handling
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 30000,
+  timeout: 60000, // Increased timeout for slower deployments
   headers: {
     "Content-Type": "application/json",
   },
 });
 
-// Request logging
+// Request interceptor with better logging
 api.interceptors.request.use(
   (config) => {
     if (import.meta.env.DEV) {
-      console.log(`API Request: ${config.method?.toUpperCase()} ${config.url}`);
+      console.log(
+        `🚀 API Request: ${config.method?.toUpperCase()} ${config.baseURL}${
+          config.url
+        }`
+      );
+      if (config.data && Object.keys(config.data).length > 0) {
+        console.log("📦 Request data:", Object.keys(config.data));
+      }
     }
     return config;
   },
   (error) => {
-    console.error("API Request Error:", error);
+    console.error("❌ API Request Error:", error);
     return Promise.reject(error);
   }
 );
 
-// Response logging & error handling
+// Response interceptor with detailed error handling
 api.interceptors.response.use(
-  (response) => response.data,
+  (response) => {
+    if (import.meta.env.DEV) {
+      console.log(
+        `✅ API Response: ${
+          response.status
+        } ${response.config.method?.toUpperCase()} ${response.config.url}`
+      );
+    }
+    return response.data;
+  },
   (error) => {
-    console.error("API Response Error:", error);
+    console.error("❌ API Response Error:", error);
+
+    // Handle different types of errors
     if (error.response) {
-      throw new Error(error.response.data?.error || "An error occurred");
+      // Server responded with error status
+      const { status, data } = error.response;
+      console.error(`HTTP ${status}:`, data);
+
+      // Create meaningful error messages
+      let errorMessage = data?.error || data?.message || `HTTP ${status} Error`;
+
+      if (status === 401) {
+        errorMessage = "Authentication failed. Please check your GitHub token.";
+      } else if (status === 403) {
+        errorMessage =
+          "Permission denied. Please check your GitHub token permissions.";
+      } else if (status === 404) {
+        errorMessage = "Resource not found.";
+      } else if (status === 429) {
+        errorMessage = "Rate limit exceeded. Please try again later.";
+      } else if (status >= 500) {
+        errorMessage = "Server error. Please try again later.";
+      }
+
+      throw new Error(errorMessage);
     } else if (error.request) {
-      throw new Error("No response from server. Please check your connection.");
+      // Network error
+      console.error("Network error:", error.request);
+      throw new Error(
+        "Unable to connect to server. Please check your internet connection."
+      );
     } else {
-      throw new Error(error.message || "Unexpected error");
+      // Other errors
+      throw new Error(error.message || "An unexpected error occurred");
     }
   }
 );
 
 //
-// ─── AUTH ────────────────────────────────────────────────
+// ─── AUTH FUNCTIONS ─────────────────────────────────────
 //
+
 export const authenticateGitHub = async (token) => {
-  // Pass token directly to backend
-  return await api.post("/auth/github", { token });
+  try {
+    console.log("🔐 Authenticating with GitHub...");
+
+    if (!token || typeof token !== "string") {
+      throw new Error("GitHub token is required");
+    }
+
+    // Clean the token (remove whitespace)
+    const cleanToken = token.trim();
+
+    if (
+      !cleanToken.startsWith("ghp_") &&
+      !cleanToken.startsWith("github_pat_")
+    ) {
+      throw new Error(
+        'Invalid GitHub token format. Token should start with "ghp_" or "github_pat_"'
+      );
+    }
+
+    const response = await api.post("/auth/github", {
+      token: cleanToken,
+    });
+
+    if (!response.success) {
+      throw new Error(response.error || "Authentication failed");
+    }
+
+    console.log("✅ GitHub authentication successful");
+    return response;
+  } catch (error) {
+    console.error("❌ GitHub authentication failed:", error.message);
+    throw error;
+  }
 };
 
 export const validateSession = async (sessionId) => {
-  return await api.get(`/auth/status`, {
-    headers: { Authorization: `Bearer ${sessionId}` },
-  });
+  try {
+    if (!sessionId) {
+      throw new Error("Session ID is required");
+    }
+
+    const response = await api.get("/auth/status", {
+      headers: { Authorization: `Bearer ${sessionId}` },
+    });
+
+    return response;
+  } catch (error) {
+    console.error("❌ Session validation failed:", error.message);
+    throw error;
+  }
 };
 
 export const logout = async (sessionId) => {
-  return await api.post(
-    "/auth/logout",
-    {},
-    { headers: { Authorization: `Bearer ${sessionId}` } }
-  );
+  try {
+    if (!sessionId) {
+      throw new Error("Session ID is required");
+    }
+
+    const response = await api.post(
+      "/auth/logout",
+      {},
+      {
+        headers: { Authorization: `Bearer ${sessionId}` },
+      }
+    );
+
+    console.log("✅ Logout successful");
+    return response;
+  } catch (error) {
+    console.error("❌ Logout failed:", error.message);
+    throw error;
+  }
 };
 
 //
-// ─── GITHUB ──────────────────────────────────────────────
+// ─── GITHUB FUNCTIONS ───────────────────────────────────
 //
+
 export const getUserRepositories = async (sessionId) => {
-  return await api.get(`/github/repos`, {
-    headers: { Authorization: `Bearer ${sessionId}` },
-  });
+  try {
+    if (!sessionId) {
+      throw new Error("Session ID is required");
+    }
+
+    const response = await api.get("/github/repos", {
+      headers: { Authorization: `Bearer ${sessionId}` },
+    });
+
+    return response;
+  } catch (error) {
+    console.error("❌ Failed to fetch repositories:", error.message);
+    throw error;
+  }
 };
 
 export const getRepositoryTree = async (
@@ -79,122 +194,279 @@ export const getRepositoryTree = async (
   path = "",
   recursive = false
 ) => {
-  return await api.get(`/github/repos/${owner}/${repo}/tree`, {
-    params: { path, recursive: recursive.toString() },
-    headers: { Authorization: `Bearer ${sessionId}` },
-  });
-};
-
-export const getFileContent = async (owner, repo, filePath, sessionId) => {
-  return await api.get(`/github/repos/${owner}/${repo}/contents/${filePath}`, {
-    headers: { Authorization: `Bearer ${sessionId}` },
-  });
-};
-
-export const createPullRequest = async (owner, repo, sessionId, prData) => {
-  return await api.post(`/github/repos/${owner}/${repo}/pulls`, prData, {
-    headers: { Authorization: `Bearer ${sessionId}` },
-  });
-};
-
-//
-// ─── TEST CASES ──────────────────────────────────────────
-//
-export const generateTestCaseSummaries = async (
-  files,
-  language = "auto",
-  testFramework = "auto"
-) => {
-  return await api.post("/testcases/generate-summaries", {
-    files,
-    language,
-    testFramework,
-  });
-};
-
-export const generateTestCases = async (files, config = {}) => {
-  return await api.post("/testcases/generate", { files, config });
-};
-
-export const downloadTestCasesAsJSON = (testCases) => {
-  const blob = new Blob([JSON.stringify(testCases, null, 2)], {
-    type: "application/json",
-  });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = "testcases.json";
-  link.click();
-};
-
-export const copyToClipboard = async (text) => {
   try {
-    await navigator.clipboard.writeText(text);
-    return true;
-  } catch (err) {
-    console.error("Copy failed", err);
-    return false;
+    if (!owner || !repo || !sessionId) {
+      throw new Error("Owner, repository name, and session ID are required");
+    }
+
+    const response = await api.get(`/github/repos/${owner}/${repo}/tree`, {
+      params: { path, recursive: recursive.toString() },
+      headers: { Authorization: `Bearer ${sessionId}` },
+    });
+
+    return response;
+  } catch (error) {
+    console.error("❌ Failed to fetch repository tree:", error.message);
+    throw error;
   }
 };
 
-export const generateTestCaseSummary = async (testCases, metadata = {}) => {
-  return await api.post("/testcases/summary", { testCases, metadata });
+export const getFileContent = async (owner, repo, filePath, sessionId) => {
+  try {
+    if (!owner || !repo || !filePath || !sessionId) {
+      throw new Error(
+        "Owner, repository name, file path, and session ID are required"
+      );
+    }
+
+    const response = await api.get(
+      `/github/repos/${owner}/${repo}/contents/${filePath}`,
+      {
+        headers: { Authorization: `Bearer ${sessionId}` },
+      }
+    );
+
+    return response;
+  } catch (error) {
+    console.error(
+      `❌ Failed to fetch file content for ${filePath}:`,
+      error.message
+    );
+    throw error;
+  }
 };
 
-export const exportSummaryReport = (summary) => {
-  const blob = new Blob([JSON.stringify(summary, null, 2)], {
-    type: "application/json",
-  });
-  const link = document.createElement("a");
-  link.href = URL.createObjectURL(blob);
-  link.download = "summary_report.json";
-  link.click();
-};
+export const createPullRequest = async (owner, repo, sessionId, prData) => {
+  try {
+    if (!owner || !repo || !sessionId || !prData) {
+      throw new Error(
+        "All parameters are required for creating a pull request"
+      );
+    }
 
-export const getTestCaseMetrics = async (testCases) => {
-  return await api.post("/testcases/metrics", { testCases });
-};
+    const response = await api.post(
+      `/github/repos/${owner}/${repo}/pulls`,
+      prData,
+      {
+        headers: { Authorization: `Bearer ${sessionId}` },
+      }
+    );
 
-export const generateTestCode = async (fileData) => {
-  return await api.post("/testcases/generate-code", fileData);
-};
-
-export const recommendTestFramework = async (files) => {
-  return await api.post("/testcases/recommend-framework", { files });
+    return response;
+  } catch (error) {
+    console.error("❌ Failed to create pull request:", error.message);
+    throw error;
+  }
 };
 
 //
-// ─── UTILITIES ──────────────────────────────────────────
+// ─── TEST CASE FUNCTIONS ────────────────────────────────
 //
+
+export const generateTestCases = async (sessionId, files, config = {}) => {
+  try {
+    if (!sessionId) {
+      throw new Error("Session ID is required");
+    }
+
+    if (!files || !Array.isArray(files) || files.length === 0) {
+      throw new Error("Files array is required and must not be empty");
+    }
+
+    console.log(`🧪 Generating test cases for ${files.length} files...`);
+
+    const response = await api.post(
+      "/testcases/generate",
+      { files, ...config },
+      {
+        headers: { Authorization: `Bearer ${sessionId}` },
+        timeout: 120000, // 2 minutes for AI generation
+      }
+    );
+
+    console.log("✅ Test cases generated successfully");
+    return response;
+  } catch (error) {
+    console.error("❌ Failed to generate test cases:", error.message);
+    throw error;
+  }
+};
+
+export const generateRepositoryTestCases = async (
+  sessionId,
+  owner,
+  repo,
+  options = {}
+) => {
+  try {
+    if (!sessionId || !owner || !repo) {
+      throw new Error("Session ID, owner, and repository name are required");
+    }
+
+    console.log(`🧪 Generating test cases for repository ${owner}/${repo}...`);
+
+    const response = await api.post(
+      "/testcases/generate/repository",
+      { owner, repo, ...options },
+      {
+        headers: { Authorization: `Bearer ${sessionId}` },
+        timeout: 180000, // 3 minutes for repository analysis
+      }
+    );
+
+    console.log("✅ Repository test cases generated successfully");
+    return response;
+  } catch (error) {
+    console.error(
+      "❌ Failed to generate repository test cases:",
+      error.message
+    );
+    throw error;
+  }
+};
+
+export const generateFileTestCases = async (
+  sessionId,
+  owner,
+  repo,
+  filePath,
+  options = {}
+) => {
+  try {
+    if (!sessionId || !owner || !repo || !filePath) {
+      throw new Error("All parameters are required");
+    }
+
+    console.log(`🧪 Generating test cases for file ${filePath}...`);
+
+    const response = await api.post(
+      "/testcases/generate/file",
+      { owner, repo, path: filePath, ...options },
+      {
+        headers: { Authorization: `Bearer ${sessionId}` },
+        timeout: 120000, // 2 minutes for file analysis
+      }
+    );
+
+    console.log("✅ File test cases generated successfully");
+    return response;
+  } catch (error) {
+    console.error("❌ Failed to generate file test cases:", error.message);
+    throw error;
+  }
+};
+
+export const getTestSuggestions = async (
+  sessionId,
+  files,
+  projectStructure = null
+) => {
+  try {
+    if (!sessionId) {
+      throw new Error("Session ID is required");
+    }
+
+    const response = await api.post(
+      "/testcases/suggestions",
+      { files, projectStructure },
+      {
+        headers: { Authorization: `Bearer ${sessionId}` },
+      }
+    );
+
+    return response;
+  } catch (error) {
+    console.error("❌ Failed to get test suggestions:", error.message);
+    throw error;
+  }
+};
+
+export const getTestFrameworks = async () => {
+  try {
+    const response = await api.get("/testcases/frameworks");
+    return response;
+  } catch (error) {
+    console.error("❌ Failed to fetch test frameworks:", error.message);
+    throw error;
+  }
+};
+
+export const getTestTypes = async () => {
+  try {
+    const response = await api.get("/testcases/types");
+    return response;
+  } catch (error) {
+    console.error("❌ Failed to fetch test types:", error.message);
+    throw error;
+  }
+};
+
+//
+// ─── UTILITY FUNCTIONS ──────────────────────────────────
+//
+
 export const healthCheck = async () => {
-  return await api.get("/health");
+  try {
+    const response = await api.get("/health");
+    return response;
+  } catch (error) {
+    console.error("❌ Health check failed:", error.message);
+    throw error;
+  }
 };
 
 export const processSelectedFiles = async (selectedFiles, sessionId) => {
+  if (!Array.isArray(selectedFiles) || selectedFiles.length === 0) {
+    throw new Error("Selected files array is required");
+  }
+
   const filesWithContent = [];
+  const errors = [];
+
   for (const file of selectedFiles) {
     try {
+      console.log(`📄 Fetching content for ${file.path}...`);
+
       const fileContent = await getFileContent(
         file.owner,
         file.repo,
         file.path,
         sessionId
       );
-      filesWithContent.push({
-        path: file.path,
-        content: fileContent.file.content,
-        size: fileContent.file.size,
-        language: detectLanguageFromPath(file.path),
-      });
+
+      if (fileContent.success && fileContent.file) {
+        filesWithContent.push({
+          path: file.path,
+          name: file.name || file.path.split("/").pop(),
+          content: fileContent.file.decodedContent,
+          size: fileContent.file.size,
+          language: detectLanguageFromPath(file.path),
+          owner: file.owner,
+          repo: file.repo,
+        });
+      }
     } catch (error) {
-      console.error(`Failed to fetch ${file.path}:`, error);
+      console.error(`❌ Failed to fetch ${file.path}:`, error.message);
+      errors.push({
+        file: file.path,
+        error: error.message,
+      });
     }
   }
-  return filesWithContent;
+
+  return {
+    files: filesWithContent,
+    errors,
+    totalRequested: selectedFiles.length,
+    totalFetched: filesWithContent.length,
+  };
 };
 
 export const detectLanguageFromPath = (filePath) => {
+  if (!filePath) return "unknown";
+
   const ext = filePath.split(".").pop()?.toLowerCase();
-  const map = {
+  const languageMap = {
     js: "javascript",
     jsx: "javascript",
     ts: "typescript",
@@ -213,12 +485,21 @@ export const detectLanguageFromPath = (filePath) => {
     scala: "scala",
     vue: "vue",
     svelte: "svelte",
+    html: "html",
+    css: "css",
+    scss: "scss",
+    json: "json",
+    yml: "yaml",
+    yaml: "yaml",
+    md: "markdown",
+    txt: "text",
   };
-  return map[ext] || "unknown";
+
+  return languageMap[ext] || "unknown";
 };
 
 export const formatFileSize = (bytes) => {
-  if (bytes === 0) return "0 Bytes";
+  if (!bytes || bytes === 0) return "0 Bytes";
   const k = 1024;
   const sizes = ["Bytes", "KB", "MB", "GB"];
   const i = Math.floor(Math.log(bytes) / Math.log(k));
@@ -243,8 +524,88 @@ export const getLanguageIcon = (language) => {
     scala: "⚖️",
     vue: "💚",
     svelte: "🧡",
+    html: "🌐",
+    css: "🎨",
+    json: "📋",
+    yaml: "⚙️",
+    markdown: "📝",
+    unknown: "📄",
   };
-  return icons[language] || "📄";
+  return icons[language] || icons.unknown;
+};
+
+// Export/Download utilities
+export const downloadTestCasesAsJSON = (
+  testCases,
+  filename = "testcases.json"
+) => {
+  try {
+    const blob = new Blob([JSON.stringify(testCases, null, 2)], {
+      type: "application/json",
+    });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(link.href);
+
+    console.log("✅ Test cases downloaded successfully");
+  } catch (error) {
+    console.error("❌ Failed to download test cases:", error);
+    throw new Error("Failed to download test cases");
+  }
+};
+
+export const copyToClipboard = async (text) => {
+  try {
+    await navigator.clipboard.writeText(text);
+    console.log("✅ Copied to clipboard");
+    return true;
+  } catch (err) {
+    console.error("❌ Copy to clipboard failed:", err);
+
+    // Fallback for older browsers
+    try {
+      const textArea = document.createElement("textarea");
+      textArea.value = text;
+      textArea.style.position = "fixed";
+      textArea.style.opacity = "0";
+      document.body.appendChild(textArea);
+      textArea.focus();
+      textArea.select();
+      document.execCommand("copy");
+      document.body.removeChild(textArea);
+      return true;
+    } catch (fallbackErr) {
+      console.error("❌ Fallback copy failed:", fallbackErr);
+      return false;
+    }
+  }
+};
+
+// Error handling utility
+export const handleApiError = (error, context = "API call") => {
+  console.error(`❌ ${context} failed:`, error);
+
+  // Extract meaningful error message
+  let message = "An unexpected error occurred";
+
+  if (error.message) {
+    message = error.message;
+  }
+
+  // Add context if available
+  if (context && context !== "API call") {
+    message = `${context}: ${message}`;
+  }
+
+  return {
+    error: true,
+    message,
+    timestamp: new Date().toISOString(),
+  };
 };
 
 export default api;
