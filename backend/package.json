@@ -28,19 +28,19 @@
     "code-analysis"
   ],
   "author": {
-    "name": "Your Name",
-    "email": "your.email@example.com",
-    "url": "https://github.com/yourusername"
+    "name": "Lakshya Verma",
+    "email": "lakshya123kl@gmail.com",
+    "url": "https://github.com/LakshyaVerma123kl"
   },
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "https://github.com/yourusername/ai-test-case-generator.git"
+    "url": "https://github.com/LakshyaVerma123kl/test-case-gen"
   },
   "bugs": {
-    "url": "https://github.com/yourusername/ai-test-case-generator/issues"
+    "url": "https://github.com/LakshyaVerma123kl/test-case-gen/issues"
   },
-  "homepage": "https://github.com/yourusername/ai-test-case-generator#readme",
+  "homepage": "https://github.com/LakshyaVerma123kl/test-case-gen#readme",
   "engines": {
     "node": ">=16.0.0",
     "npm": ">=8.0.0"
