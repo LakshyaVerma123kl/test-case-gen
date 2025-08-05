@@ -35,9 +35,9 @@ class GeminiService {
    * @returns {Promise<Array>} Generated test cases
    */
   async generateTestCases(files, config = {}) {
-    const prompt = this.buildTestGenerationPrompt(files, config);
-
     try {
+      const prompt = this.buildTestGenerationPrompt(files, config);
+
       const result = await this.model.generateContent(prompt);
       const response = await result.response;
       const text = response.text();
@@ -45,7 +45,10 @@ class GeminiService {
       return this.parseTestCasesResponse(text, files, config);
     } catch (error) {
       console.error('Gemini API Error:', error);
-      throw new Error(`AI generation failed: ${error.message}`);
+
+      // Return fallback test cases if AI fails
+      console.log('Falling back to template test cases');
+      return this.createFallbackTestCases('AI generation failed', files, config);
     }
   }
 
@@ -56,9 +59,9 @@ class GeminiService {
    * @returns {Promise<Object>} Summary and insights
    */
   async generateSummary(testCases, metadata = {}) {
-    const prompt = this.buildSummaryPrompt(testCases, metadata);
-
     try {
+      const prompt = this.buildSummaryPrompt(testCases, metadata);
+
       const result = await this.model.generateContent(prompt);
       const response = await result.response;
       const text = response.text();
@@ -66,7 +69,7 @@ class GeminiService {
       return this.parseSummaryResponse(text, testCases);
     } catch (error) {
       console.error('Gemini Summary Error:', error);
-      throw new Error(`Summary generation failed: ${error.message}`);
+      return this.createFallbackSummary(testCases);
     }
   }
 
@@ -76,9 +79,9 @@ class GeminiService {
    * @returns {Promise<Object>} Code analysis results
    */
   async analyzeCode(files) {
-    const prompt = this.buildCodeAnalysisPrompt(files);
-
     try {
+      const prompt = this.buildCodeAnalysisPrompt(files);
+
       const result = await this.model.generateContent(prompt);
       const response = await result.response;
       const text = response.text();
@@ -86,7 +89,7 @@ class GeminiService {
       return this.parseCodeAnalysisResponse(text, files);
     } catch (error) {
       console.error('Gemini Code Analysis Error:', error);
-      throw new Error(`Code analysis failed: ${error.message}`);
+      return this.createFallbackAnalysis(files);
     }
   }
 
@@ -141,7 +144,7 @@ Respond ONLY with valid JSON in this exact format:
   ]
 }
 
-Generate ${Math.min(files.length * 3, 10)} relevant test cases.`;
+Generate ${Math.min(files.length * 3, 15)} relevant test cases.`;
   }
 
   /**
@@ -226,6 +229,8 @@ Respond ONLY with valid JSON:
     try {
       // Clean the response and extract JSON
       const cleanText = text.replace(/```json\n?|\n?```/g, '').trim();
+
+      // Try to find JSON content between curly braces
       const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
 
       if (jsonMatch) {
@@ -251,12 +256,73 @@ Respond ONLY with valid JSON:
         }
       }
 
-      // Fallback parsing
-      return this.createFallbackTestCases(text, files, config);
+      // Fallback parsing - try to extract individual test cases
+      return this.parseAlternativeFormat(text, files, config);
     } catch (error) {
       console.error('Error parsing AI response:', error);
       return this.createFallbackTestCases(text, files, config);
     }
+  }
+
+  /**
+   * Alternative parsing for non-JSON responses
+   */
+  parseAlternativeFormat(text, files, config) {
+    const testCases = [];
+
+    // Try to extract test case information from text
+    const lines = text.split('\n');
+    let currentTest = {};
+
+    lines.forEach((line, index) => {
+      if (line.toLowerCase().includes('test') && line.includes(':')) {
+        if (Object.keys(currentTest).length > 0) {
+          testCases.push(this.completeTestCase(currentTest, files, config, testCases.length));
+          currentTest = {};
+        }
+        currentTest.title = line.replace(/^\d+\.?\s*/, '').trim();
+      } else if (line.toLowerCase().includes('description')) {
+        currentTest.description = line.split(':')[1]?.trim();
+      } else if (line.includes('```') && !currentTest.code) {
+        currentTest.code = '';
+      } else if (currentTest.code !== undefined && !line.includes('```')) {
+        currentTest.code += line + '\n';
+      }
+    });
+
+    // Add the last test case
+    if (Object.keys(currentTest).length > 0) {
+      testCases.push(this.completeTestCase(currentTest, files, config, testCases.length));
+    }
+
+    return testCases.length > 0 ? testCases : this.createFallbackTestCases(text, files, config);
+  }
+
+  /**
+   * Complete a partial test case with defaults
+   */
+  completeTestCase(testCase, files, config, index) {
+    const language = this.detectLanguage(files[0]?.path || '');
+    const framework = this.getDefaultFramework(language);
+
+    return {
+      id: `parsed_${Date.now()}_${index}`,
+      title: testCase.title || `Test Case ${index + 1}`,
+      description: testCase.description || 'Parsed from AI response',
+      type: config.types?.[0] || 'unit',
+      priority: 'medium',
+      file: files[0]?.path || 'unknown',
+      function: null,
+      code:
+        testCase.code ||
+        this.generateTemplateCode(language, framework, config.types?.[0] || 'unit', files[0]),
+      setup: null,
+      teardown: null,
+      dependencies: this.getFrameworkDependencies(framework),
+      tags: [],
+      generatedBy: 'gemini-ai-parsed',
+      createdAt: new Date().toISOString(),
+    };
   }
 
   /**
@@ -315,7 +381,9 @@ Respond ONLY with valid JSON:
       const language = this.detectLanguage(file.path);
       const framework = this.getDefaultFramework(language);
 
-      config.types?.forEach((type, typeIndex) => {
+      const types = config.types || ['unit'];
+
+      types.forEach((type, typeIndex) => {
         testCases.push({
           id: `fallback_${Date.now()}_${index}_${typeIndex}`,
           title: `${type} test for ${file.name || file.path}`,
@@ -323,8 +391,12 @@ Respond ONLY with valid JSON:
           type,
           priority: 'medium',
           file: file.path,
+          function: null,
           code: this.generateTemplateCode(language, framework, type, file),
+          setup: null,
+          teardown: null,
           dependencies: this.getFrameworkDependencies(framework),
+          tags: [language, framework],
           generatedBy: 'fallback',
           createdAt: new Date().toISOString(),
         });
@@ -461,13 +533,36 @@ Respond ONLY with valid JSON:
     // TODO: Implement test
     expect(true).toBe(true);
   });
+
+  test('should handle edge cases', () => {
+    // TODO: Add edge case tests
+    expect(true).toBeTruthy();
+  });
 });`,
       },
       python: {
         pytest: `def test_${file.name?.replace(/[^a-zA-Z0-9]/g, '_') || 'module'}():
     """Test basic functionality"""
     # TODO: Implement test
+    assert True
+
+def test_${file.name?.replace(/[^a-zA-Z0-9]/g, '_') || 'module'}_edge_cases():
+    """Test edge cases"""
+    # TODO: Add edge case tests
     assert True`,
+      },
+      java: {
+        junit: `@Test
+public void testBasicFunctionality() {
+    // TODO: Implement test
+    assertTrue(true);
+}
+
+@Test
+public void testEdgeCases() {
+    // TODO: Add edge case tests
+    assertNotNull("");
+}`,
       },
     };
 
@@ -475,4 +570,5 @@ Respond ONLY with valid JSON:
   }
 }
 
+// Export singleton instance
 module.exports = new GeminiService();

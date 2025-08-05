@@ -1,154 +1,269 @@
 const express = require('express');
-const crypto = require('crypto');
+const { validateSession, githubClients } = require('./auth');
 const GitHubService = require('../services/github');
-
 const router = express.Router();
 
-// In-memory session store (replace with Redis/DB in production)
-const githubClients = new Map();
-const activeSessions = new Map();
-const SESSION_TIMEOUT = 24 * 60 * 60 * 1000; // 24 hours
+// Apply session validation to all routes
+router.use(validateSession);
 
-// Middleware to validate session
-const validateSession = (req, res, next) => {
-  const sessionId = req.headers.authorization?.replace('Bearer ', '');
-
-  if (!sessionId) {
-    return res.status(401).json({ error: 'No session token provided' });
+// Helper function to get GitHub client
+const getGitHubClient = (sessionId) => {
+  const client = githubClients.get(sessionId);
+  if (!client) {
+    throw new Error('GitHub client not found for session');
   }
-
-  const session = activeSessions.get(sessionId);
-  if (!session) {
-    return res.status(401).json({ error: 'Invalid or expired session' });
-  }
-
-  // Expiration check
-  if (Date.now() - session.createdAt > SESSION_TIMEOUT) {
-    activeSessions.delete(sessionId);
-    githubClients.delete(sessionId);
-    return res.status(401).json({ error: 'Session expired' });
-  }
-
-  req.sessionId = sessionId;
-  req.githubToken = session.accessToken;
-  next();
+  return client;
 };
 
 /**
- * Authenticate with GitHub using a Personal Access Token
+ * Get user repositories
  */
-router.post('/github', async (req, res) => {
+router.get('/repos', async (req, res) => {
   try {
-    const { token } = req.body;
-
-    if (!token) {
-      return res.status(400).json({ error: 'GitHub token is required' });
-    }
-
-    const githubService = new GitHubService(token);
-
-    // Get authenticated user from GitHub API
-    const user = await githubService.getUser();
-
-    // Generate session ID
-    const sessionId = crypto.randomBytes(32).toString('hex');
-
-    // Store session in memory
-    const session = {
-      sessionId,
-      accessToken: token,
-      user: {
-        id: user.id,
-        login: user.login,
-        name: user.name,
-        email: user.email,
-        avatar_url: user.avatar_url,
-      },
-      createdAt: Date.now(),
-    };
-
-    activeSessions.set(sessionId, session);
-    githubClients.set(sessionId, githubService);
+    const githubService = getGitHubClient(req.sessionId);
+    const repositories = await githubService.getRepositories();
 
     res.json({
       success: true,
-      user: session.user,
-      sessionId,
-      expiresIn: SESSION_TIMEOUT,
+      repositories,
+      count: repositories.length,
     });
   } catch (error) {
-    console.error('GitHub token authentication error:', error);
+    console.error('Error fetching repositories:', error);
     res.status(500).json({
-      error: 'Authentication failed',
+      error: 'Failed to fetch repositories',
       message: error.message,
     });
   }
 });
 
 /**
- * Get current authenticated user
+ * Get repository details
  */
-router.get('/me', validateSession, (req, res) => {
-  const session = activeSessions.get(req.sessionId);
-  res.json({
-    user: session.user,
-    sessionId: req.sessionId,
-    expiresAt: session.createdAt + SESSION_TIMEOUT,
-  });
-});
+router.get('/repos/:owner/:repo', async (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const githubService = getGitHubClient(req.sessionId);
 
-/**
- * Logout
- */
-router.post('/logout', validateSession, (req, res) => {
-  activeSessions.delete(req.sessionId);
-  githubClients.delete(req.sessionId);
-  res.json({ message: 'Logged out successfully' });
-});
+    const repository = await githubService.getRepository(owner, repo);
+    const languages = await githubService.getRepositoryLanguages(owner, repo);
 
-/**
- * Check session status
- */
-router.get('/status', (req, res) => {
-  const sessionId = req.headers.authorization?.replace('Bearer ', '');
-
-  if (!sessionId || !activeSessions.has(sessionId)) {
-    return res.json({ authenticated: false });
+    res.json({
+      success: true,
+      repository: {
+        ...repository,
+        languages,
+      },
+    });
+  } catch (error) {
+    console.error('Error fetching repository:', error);
+    res.status(500).json({
+      error: 'Failed to fetch repository details',
+      message: error.message,
+    });
   }
-
-  const session = activeSessions.get(sessionId);
-  const isExpired = Date.now() - session.createdAt > SESSION_TIMEOUT;
-
-  if (isExpired) {
-    activeSessions.delete(sessionId);
-    githubClients.delete(sessionId);
-    return res.json({ authenticated: false, reason: 'expired' });
-  }
-
-  res.json({
-    authenticated: true,
-    user: session.user,
-    expiresAt: session.createdAt + SESSION_TIMEOUT,
-  });
 });
 
 /**
- * Cleanup expired sessions every hour
+ * Get repository tree structure
  */
-setInterval(
-  () => {
-    const now = Date.now();
-    for (const [sessionId, session] of activeSessions.entries()) {
-      if (now - session.createdAt > SESSION_TIMEOUT) {
-        activeSessions.delete(sessionId);
-        githubClients.delete(sessionId);
-      }
+router.get('/repos/:owner/:repo/tree', async (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const { path = '', recursive = 'false' } = req.query;
+    const githubService = getGitHubClient(req.sessionId);
+
+    const tree = await githubService.getRepositoryTree(owner, repo, 'HEAD', recursive === 'true');
+
+    res.json(tree.tree || []);
+  } catch (error) {
+    console.error('Error fetching repository tree:', error);
+    res.status(500).json({
+      error: 'Failed to fetch repository tree',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * Get file contents
+ */
+router.get('/repos/:owner/:repo/contents/*', async (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const filePath = req.params[0]; // Get the wildcard path
+    const githubService = getGitHubClient(req.sessionId);
+
+    const fileData = await githubService.getFileContent(owner, repo, filePath);
+
+    res.json({
+      success: true,
+      file: fileData,
+    });
+  } catch (error) {
+    console.error('Error fetching file content:', error);
+    res.status(500).json({
+      error: 'Failed to fetch file content',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * Get repository branches
+ */
+router.get('/repos/:owner/:repo/branches', async (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const githubService = getGitHubClient(req.sessionId);
+
+    const branches = await githubService.getBranches(owner, repo);
+
+    res.json({
+      success: true,
+      branches,
+    });
+  } catch (error) {
+    console.error('Error fetching branches:', error);
+    res.status(500).json({
+      error: 'Failed to fetch branches',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * Create a new file
+ */
+router.post('/repos/:owner/:repo/contents/*', async (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const filePath = req.params[0];
+    const { content, message, branch = 'main' } = req.body;
+
+    if (!content || !message) {
+      return res.status(400).json({
+        error: 'Content and commit message are required',
+      });
     }
-  },
-  60 * 60 * 1000
-);
+
+    const githubService = getGitHubClient(req.sessionId);
+    const result = await githubService.createFile(owner, repo, filePath, content, message, branch);
+
+    res.json({
+      success: true,
+      result,
+    });
+  } catch (error) {
+    console.error('Error creating file:', error);
+    res.status(500).json({
+      error: 'Failed to create file',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * Update an existing file
+ */
+router.put('/repos/:owner/:repo/contents/*', async (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const filePath = req.params[0];
+    const { content, message, sha, branch = 'main' } = req.body;
+
+    if (!content || !message || !sha) {
+      return res.status(400).json({
+        error: 'Content, commit message, and file SHA are required',
+      });
+    }
+
+    const githubService = getGitHubClient(req.sessionId);
+    const result = await githubService.updateFile(
+      owner,
+      repo,
+      filePath,
+      content,
+      message,
+      sha,
+      branch
+    );
+
+    res.json({
+      success: true,
+      result,
+    });
+  } catch (error) {
+    console.error('Error updating file:', error);
+    res.status(500).json({
+      error: 'Failed to update file',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * Create a pull request
+ */
+router.post('/repos/:owner/:repo/pulls', async (req, res) => {
+  try {
+    const { owner, repo } = req.params;
+    const { title, head, base, body = '' } = req.body;
+
+    if (!title || !head || !base) {
+      return res.status(400).json({
+        error: 'Title, head branch, and base branch are required',
+      });
+    }
+
+    const githubService = getGitHubClient(req.sessionId);
+    const pullRequest = await githubService.createPullRequest(owner, repo, title, head, base, body);
+
+    res.json({
+      success: true,
+      pullRequest,
+    });
+  } catch (error) {
+    console.error('Error creating pull request:', error);
+    res.status(500).json({
+      error: 'Failed to create pull request',
+      message: error.message,
+    });
+  }
+});
+
+/**
+ * Search repositories (for the authenticated user)
+ */
+router.get('/search/repositories', async (req, res) => {
+  try {
+    const { q, sort = 'updated', order = 'desc', per_page = 30, page = 1 } = req.query;
+
+    if (!q) {
+      return res.status(400).json({
+        error: 'Search query (q) is required',
+      });
+    }
+
+    const githubService = getGitHubClient(req.sessionId);
+    const searchResults = await githubService.searchRepositories(q, {
+      sort,
+      order,
+      per_page: parseInt(per_page),
+      page: parseInt(page),
+    });
+
+    res.json({
+      success: true,
+      ...searchResults,
+    });
+  } catch (error) {
+    console.error('Error searching repositories:', error);
+    res.status(500).json({
+      error: 'Failed to search repositories',
+      message: error.message,
+    });
+  }
+});
 
 module.exports = router;
-module.exports.validateSession = validateSession;
-module.exports.githubClients = githubClients;
-module.exports.activeSessions = activeSessions;
