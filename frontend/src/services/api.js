@@ -219,11 +219,49 @@ export const getUserRepositories = async (sessionId) => {
       throw new Error("Session ID is required");
     }
 
+    console.log("🔍 Fetching repositories...");
     const response = await api.get("/github/repos", {
       headers: { Authorization: `Bearer ${sessionId}` },
     });
 
-    return response;
+    // Detailed response logging
+    console.log("🔍 Full API Response:", response);
+    console.log("🔍 Response type:", typeof response);
+    console.log("🔍 Is response an array?", Array.isArray(response));
+
+    if (response && typeof response === "object" && !Array.isArray(response)) {
+      console.log("🔍 Response keys:", Object.keys(response));
+    }
+
+    // Handle the nested response structure from your backend
+    if (response && response.repositories) {
+      console.log("🔍 Found nested repositories:", response.repositories);
+      console.log("🔍 Repositories count:", response.repositories.length);
+      if (response.repositories.length > 0) {
+        console.log("🔍 First repository sample:", response.repositories[0]);
+      }
+      return response.repositories;
+    }
+
+    // If response is already an array (different API structure)
+    if (Array.isArray(response)) {
+      console.log("🔍 Response is already an array:", response.length);
+      return response;
+    }
+
+    // If repositories are in a different nested structure
+    if (response.data && Array.isArray(response.data)) {
+      console.log(
+        "🔍 Found repositories in response.data:",
+        response.data.length
+      );
+      return response.data;
+    }
+
+    // Log what we actually got and return empty array
+    console.warn("🚨 Unexpected response structure:", response);
+    console.warn("🚨 Returning empty array as fallback");
+    return [];
   } catch (error) {
     console.error("❌ Failed to fetch repositories:", error.message);
     throw error;

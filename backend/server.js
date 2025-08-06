@@ -11,6 +11,8 @@ const githubRoutes = require('./routes/github');
 const testcaseRoutes = require('./routes/testcases');
 
 const app = express();
+
+// ✅ CRITICAL FIX: Use Render's PORT environment variable
 const PORT = process.env.PORT || 5000;
 
 // -------------------- Trust Proxy (important for deployed apps) --------------------
@@ -151,6 +153,7 @@ app.get('/api/health', (req, res) => {
     uptime: process.uptime(),
     memory: process.memoryUsage(),
     nodeVersion: process.version,
+    port: PORT, // ✅ Show the actual port being used
   });
 });
 
@@ -162,6 +165,7 @@ app.get('/api', (req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
+    port: PORT, // ✅ Show the actual port
     endpoints: {
       health: 'GET /api/health',
       auth: {
@@ -303,7 +307,7 @@ const gracefulShutdown = (signal) => {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// -------------------- Start Server --------------------
+// ✅ CRITICAL FIX: Listen on 0.0.0.0 and use Render's PORT
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('🚀 ================================');
   console.log(`🚀 Server running on port ${PORT}`);
@@ -324,6 +328,9 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     );
     console.log(`   - Gemini API: ${!!process.env.GEMINI_API_KEY}`);
   }
+
+  // ✅ Log the actual port being used (for debugging)
+  console.log(`✅ Server successfully bound to port ${PORT}`);
 });
 
 // Handle server errors
