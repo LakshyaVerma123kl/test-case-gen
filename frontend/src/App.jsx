@@ -150,7 +150,7 @@ function App() {
         <footer className="bg-white border-t border-secondary-200 py-6 mt-12">
           <div className="container mx-auto px-4 text-center">
             <p className="text-secondary-600">
-              Built with ❤️ for Workik AI • Powered by Gemini AI & GitHub API
+              •Powered by Gemini AI & GitHub API
             </p>
           </div>
         </footer>

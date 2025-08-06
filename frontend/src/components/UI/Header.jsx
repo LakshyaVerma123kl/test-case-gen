@@ -15,7 +15,6 @@ const Header = ({ user, onLogout }) => {
               <h1 className="text-xl font-bold text-secondary-900">
                 Test Case Generator
               </h1>
-              <p className="text-xs text-secondary-500">Powered by Workik AI</p>
             </div>
           </div>
 
