@@ -38,11 +38,10 @@ class GitHubService {
     }
   }
 
-  // Get user repositories with pagination support
+  // FIXED: Get user repositories with improved error handling and fallback
   async getRepositories(options = {}) {
     try {
       const {
-        visibility = 'all',
         sort = 'updated',
         direction = 'desc',
         per_page = 50,
@@ -50,20 +49,82 @@ class GitHubService {
         type = 'all',
       } = options;
 
-      const { data } = await this.octokit.rest.repos.listForAuthenticatedUser({
-        visibility,
+      // Primary attempt - simplified parameters to avoid compatibility issues
+      const requestParams = {
         sort,
         direction,
         per_page: Math.min(per_page, 100), // GitHub API limit
         page,
-        type,
-      });
+        type, // 'all', 'owner', 'public', 'private', 'member'
+        // Removed problematic 'visibility' parameter
+      };
+
+      console.log('🔍 Fetching repositories with params:', requestParams);
+
+      const { data } = await this.octokit.rest.repos.listForAuthenticatedUser(requestParams);
+
+      console.log(`✅ Successfully fetched ${data.length} repositories`);
 
       return data;
     } catch (error) {
+      console.error('❌ Primary repository fetch failed:', error.message);
+
+      // Handle specific errors and provide fallbacks
       if (error.status === 401) {
         throw new Error('Authentication failed - please check your GitHub token');
+      } else if (error.status === 403) {
+        throw new Error('Insufficient permissions - ensure your token has repo scope');
       }
+
+      // Try fallback method for compatibility issues
+      console.log('🔄 Attempting fallback repository fetch...');
+      return await this.getRepositoriesFallback(options);
+    }
+  }
+
+  // Fallback method for repository fetching
+  async getRepositoriesFallback(options = {}) {
+    try {
+      const { sort = 'updated', direction = 'desc', per_page = 50, page = 1 } = options;
+
+      // Try with minimal parameters first
+      try {
+        const { data } = await this.octokit.rest.repos.listForAuthenticatedUser({
+          sort,
+          direction,
+          per_page: Math.min(per_page, 100),
+          page,
+        });
+        console.log('✅ Fallback method 1 successful');
+        return data;
+      } catch (minimalError) {
+        console.log('⚠️ Minimal params failed, trying basic request...');
+      }
+
+      // Try with absolutely basic parameters
+      try {
+        const { data } = await this.octokit.rest.repos.listForAuthenticatedUser({
+          per_page: 50,
+        });
+        console.log('✅ Fallback method 2 successful');
+        return data;
+      } catch (basicError) {
+        console.log('⚠️ Basic request failed, trying user repos endpoint...');
+      }
+
+      // Last resort: try user repos endpoint (may not include all private repos)
+      const user = await this.getUser();
+      const { data } = await this.octokit.rest.repos.listForUser({
+        username: user.login,
+        per_page: 50,
+      });
+
+      console.log('✅ Fallback method 3 successful (public repos only)');
+      console.log('ℹ️ Note: This method may not include all private repositories');
+
+      return data;
+    } catch (error) {
+      console.error('❌ All repository fetch methods failed:', error.message);
       throw new Error(`Failed to get repositories: ${error.message}`);
     }
   }

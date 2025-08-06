@@ -9,7 +9,7 @@ console.log("🌐 API Base URL:", API_BASE_URL);
 // Axios instance with improved error handling
 const api = axios.create({
   baseURL: API_BASE_URL,
-  timeout: 60000, // Increased timeout for slower deployments
+  timeout: 180000, // 3 minutes for cold starts on free tier
   headers: {
     "Content-Type": "application/json",
   },
