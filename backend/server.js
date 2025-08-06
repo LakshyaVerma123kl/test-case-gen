@@ -15,8 +15,15 @@ const app = express();
 // ✅ CRITICAL FIX: Use Render's dynamic PORT (don't hardcode)
 const PORT = process.env.PORT || 5000;
 
-// -------------------- Trust Proxy (important for deployed apps) --------------------
-app.set('trust proxy', 1);
+// -------------------- Trust Proxy (CRITICAL FIX) --------------------
+// ✅ FIXED: Properly configure trust proxy for production
+if (process.env.NODE_ENV === 'production' || process.env.TRUST_PROXY === 'true') {
+  app.set('trust proxy', 1); // Trust first proxy (Render, Heroku, etc.)
+  console.log('✅ Trust proxy enabled for production environment');
+} else {
+  app.set('trust proxy', false);
+  console.log('🔧 Trust proxy disabled for development environment');
+}
 
 // -------------------- Security Middleware --------------------
 app.use(
@@ -26,7 +33,65 @@ app.use(
   })
 );
 
-// -------------------- Rate Limiting --------------------
+// -------------------- CORS Configuration (CRITICAL FIX) --------------------
+// ✅ FIXED: Simplified and more robust CORS configuration
+const allowedOrigins = [
+  'https://test-case-gen-self.vercel.app',
+  'http://localhost:3000',
+  'http://localhost:5173',
+  process.env.FRONTEND_URL,
+  ...(process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : []),
+]
+  .filter(Boolean)
+  .filter((origin, index, arr) => arr.indexOf(origin) === index); // Remove duplicates
+
+console.log('🌐 Allowed CORS origins:', allowedOrigins);
+
+const corsOptions = {
+  origin: function (origin, callback) {
+    console.log(`🔍 CORS check for origin: ${origin || 'no-origin'}`);
+
+    // Allow requests with no origin (mobile apps, Postman, curl, etc.)
+    if (!origin) {
+      console.log('✅ CORS: Allowing request with no origin');
+      return callback(null, true);
+    }
+
+    // Check if origin is exactly in allowed list
+    if (allowedOrigins.includes(origin)) {
+      console.log(`✅ CORS: Origin ${origin} is explicitly allowed`);
+      return callback(null, true);
+    }
+
+    // Log and reject
+    console.warn(`🚫 CORS: Origin ${origin} not in allowed list:`, allowedOrigins);
+    return callback(
+      new Error(
+        `CORS policy: Origin ${origin} not allowed. Allowed origins: ${allowedOrigins.join(', ')}`
+      ),
+      false
+    );
+  },
+  credentials: true,
+  optionsSuccessStatus: 200,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'Accept',
+    'Origin',
+    'Access-Control-Request-Method',
+    'Access-Control-Request-Headers',
+  ],
+  exposedHeaders: ['X-Total-Count', 'X-Rate-Limit-Remaining'],
+};
+
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
+
+// -------------------- Rate Limiting (FIXED) --------------------
+// ✅ FIXED: Improved rate limiting configuration with better error handling
 const limiter = rateLimit({
   windowMs: parseInt(process.env.RATE_LIMIT_WINDOW) || 15 * 60 * 1000, // 15 minutes
   max: parseInt(process.env.RATE_LIMIT_REQUESTS) || 100,
@@ -37,15 +102,28 @@ const limiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => {
-    // Skip rate limiting for health checks
-    return req.path === '/api/health' || req.path === '/api';
+    // Skip rate limiting for health checks and OPTIONS requests
+    return req.path === '/api/health' || req.path === '/api' || req.method === 'OPTIONS';
+  },
+  // ✅ FIXED: Better key generation with error handling
+  keyGenerator: (req) => {
+    // In production with trust proxy, use the real IP
+    if (process.env.NODE_ENV === 'production') {
+      return req.ip || req.connection.remoteAddress || 'unknown';
+    }
+    // In development, use connection remote address
+    return req.connection.remoteAddress || req.ip || 'unknown';
+  },
+  // ✅ FIXED: Add error handler for rate limiter
+  onLimitReached: (req, res, options) => {
+    console.warn(`⚠️  Rate limit exceeded for ${req.ip} on ${req.path}`);
   },
 });
 
 // Apply rate limiting to all API routes
 app.use('/api/', limiter);
 
-// Special rate limiting for AI endpoints
+// Special rate limiting for AI endpoints with more lenient settings for debugging
 const aiLimiter = rateLimit({
   windowMs: parseInt(process.env.AI_RATE_LIMIT_WINDOW) || 60 * 60 * 1000, // 1 hour
   max: parseInt(process.env.AI_RATE_LIMIT_REQUESTS) || 50,
@@ -55,57 +133,19 @@ const aiLimiter = rateLimit({
   },
   standardHeaders: true,
   legacyHeaders: false,
+  keyGenerator: (req) => {
+    if (process.env.NODE_ENV === 'production') {
+      return req.ip || req.connection.remoteAddress || 'unknown';
+    }
+    return req.connection.remoteAddress || req.ip || 'unknown';
+  },
+  skip: (req) => {
+    // Skip AI rate limiting in development for easier debugging
+    return process.env.NODE_ENV === 'development';
+  },
 });
 
 app.use('/api/testcases/generate', aiLimiter);
-
-// -------------------- CORS Configuration --------------------
-const allowedOrigins = [
-  process.env.FRONTEND_URL,
-  process.env.ALLOWED_ORIGINS?.split(',') || [],
-  'http://localhost:3000',
-  'http://localhost:5173', // Vite default
-  'https://test-case-gen-self.vercel.app',
-]
-  .flat()
-  .filter(Boolean);
-
-console.log('🌐 Allowed CORS origins:', allowedOrigins);
-
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, curl, etc.)
-    if (!origin) {
-      return callback(null, true);
-    }
-
-    // Check if origin is in allowed list
-    if (
-      allowedOrigins.some((allowedOrigin) => {
-        if (allowedOrigin === origin) return true;
-        // Allow wildcards for development
-        if (allowedOrigin.includes('*')) {
-          const pattern = new RegExp(allowedOrigin.replace(/\*/g, '.*'));
-          return pattern.test(origin);
-        }
-        return false;
-      })
-    ) {
-      return callback(null, true);
-    }
-
-    console.warn(`🚫 CORS blocked origin: ${origin}`);
-    return callback(new Error(`CORS policy: Origin ${origin} not allowed`), false);
-  },
-  credentials: true,
-  optionsSuccessStatus: 200,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
-  exposedHeaders: ['X-Total-Count', 'X-Rate-Limit-Remaining'],
-};
-
-app.use(cors(corsOptions));
-app.options('*', cors(corsOptions));
 
 // -------------------- Body Parsing --------------------
 app.use(
@@ -129,19 +169,23 @@ app.use(
   })
 );
 
-// -------------------- Request Logging --------------------
-if (process.env.ENABLE_REQUEST_LOGGING === 'true') {
-  app.use((req, res, next) => {
-    const start = Date.now();
+// -------------------- Request Logging (Enhanced) --------------------
+app.use((req, res, next) => {
+  const start = Date.now();
 
-    res.on('finish', () => {
-      const duration = Date.now() - start;
-      console.log(`${req.method} ${req.path} - ${res.statusCode} (${duration}ms)`);
-    });
+  // Log incoming request
+  console.log(`📥 ${req.method} ${req.path} - ${req.ip} - Origin: ${req.get('origin') || 'none'}`);
 
-    next();
+  res.on('finish', () => {
+    const duration = Date.now() - start;
+    const status = res.statusCode;
+    const statusIcon = status >= 400 ? '❌' : status >= 300 ? '⚠️' : '✅';
+
+    console.log(`📤 ${statusIcon} ${req.method} ${req.path} - ${status} (${duration}ms)`);
   });
-}
+
+  next();
+});
 
 // -------------------- Health Check (before other routes) --------------------
 app.get('/api/health', (req, res) => {
@@ -153,7 +197,9 @@ app.get('/api/health', (req, res) => {
     uptime: process.uptime(),
     memory: process.memoryUsage(),
     nodeVersion: process.version,
-    port: PORT, // Show actual port being used
+    port: PORT,
+    corsOrigins: allowedOrigins,
+    trustProxy: app.get('trust proxy'),
   });
 });
 
@@ -189,6 +235,7 @@ app.get('/api', (req, res) => {
         types: 'GET /api/testcases/types',
       },
     },
+    corsOrigins: allowedOrigins,
     documentation: 'https://github.com/yourusername/ai-test-case-generator#api-documentation',
   });
 });
@@ -224,7 +271,7 @@ app.use('*', (req, res) => {
   });
 });
 
-// -------------------- Global Error Handler --------------------
+// -------------------- Global Error Handler (Enhanced) --------------------
 app.use((err, req, res, next) => {
   console.error(`❌ Error on ${req.method} ${req.path}:`, err);
 
@@ -247,6 +294,16 @@ app.use((err, req, res, next) => {
   if (err.code === 'LIMIT_FILE_SIZE') {
     message = 'Request body too large';
     return res.status(413).json({ error: message });
+  }
+
+  // Handle CORS errors specifically
+  if (err.message && err.message.includes('CORS policy')) {
+    message = err.message;
+    return res.status(403).json({
+      error: message,
+      allowedOrigins: allowedOrigins,
+      requestOrigin: req.get('origin'),
+    });
   }
 
   if (err.message && status < 500) {
@@ -311,27 +368,28 @@ const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('🚀 ================================');
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🚀 Environment: ${process.env.NODE_ENV || 'development'}`);
-  // ✅ FIX: Don't use hardcoded localhost in production
+
+  // ✅ FIX: Use correct base URL for production
   const baseUrl =
     process.env.NODE_ENV === 'production'
-      ? `https://your-app-name.onrender.com`
+      ? `https://test-case-gen-e98c.onrender.com`
       : `http://localhost:${PORT}`;
+
   console.log(`🚀 API Base URL: ${baseUrl}/api`);
   console.log(`🩺 Health check: ${baseUrl}/api/health`);
   console.log(`📚 Documentation: ${baseUrl}/api`);
   console.log('🚀 ================================');
 
-  // Log configuration in development
-  if (process.env.NODE_ENV === 'development') {
-    console.log('🔧 Configuration:');
-    console.log(`   - CORS Origins: ${allowedOrigins.join(', ')}`);
-    console.log(`   - Rate Limit: ${process.env.RATE_LIMIT_REQUESTS || 100}/15min`);
-    console.log(`   - AI Rate Limit: ${process.env.AI_RATE_LIMIT_REQUESTS || 50}/hour`);
-    console.log(
-      `   - GitHub OAuth: ${!!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET)}`
-    );
-    console.log(`   - Gemini API: ${!!process.env.GEMINI_API_KEY}`);
-  }
+  // Log configuration
+  console.log('🔧 Configuration:');
+  console.log(`   - CORS Origins: ${allowedOrigins.join(', ')}`);
+  console.log(`   - Trust Proxy: ${app.get('trust proxy')}`);
+  console.log(`   - Rate Limit: ${process.env.RATE_LIMIT_REQUESTS || 100}/15min`);
+  console.log(`   - AI Rate Limit: ${process.env.AI_RATE_LIMIT_REQUESTS || 50}/hour`);
+  console.log(
+    `   - GitHub OAuth: ${!!(process.env.GITHUB_CLIENT_ID && process.env.GITHUB_CLIENT_SECRET)}`
+  );
+  console.log(`   - Gemini API: ${!!process.env.GEMINI_API_KEY}`);
 
   // ✅ Log successful port binding (critical for Render)
   console.log(`✅ Server successfully bound to port ${PORT} on all interfaces (0.0.0.0)`);

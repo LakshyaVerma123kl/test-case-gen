@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useCallback, useMemo } from "react";
 import {
   Zap,
   Settings,
@@ -24,9 +24,9 @@ import Button from "../UI/Button";
 import LoadingSpinner from "../UI/LoadingSpinner";
 
 const TestCaseGenerator = ({
-  selectedFiles = [], // Changed from files to selectedFiles to match Dashboard props
+  selectedFiles = [],
   repository,
-  onTestCasesGenerated, // Changed from onTestGenerated to match expected function
+  onTestCasesGenerated,
   sessionId,
 }) => {
   const [isGenerating, setIsGenerating] = useState(false);
@@ -41,6 +41,7 @@ const TestCaseGenerator = ({
   });
   const [error, setError] = useState(null);
   const [generationTime, setGenerationTime] = useState(0);
+  const [lastGeneratedFiles, setLastGeneratedFiles] = useState([]);
 
   const testFrameworks = {
     javascript: ["Jest", "Mocha", "Cypress", "Playwright"],
@@ -53,9 +54,31 @@ const TestCaseGenerator = ({
     auto: ["Auto-detect"],
   };
 
-  const handleGenerate = async () => {
-    if (selectedFiles.length === 0) {
+  // Memoize selected files to prevent unnecessary re-renders
+  const memoizedSelectedFiles = useMemo(() => {
+    return selectedFiles.map((file) => ({
+      path: file.path,
+      name: file.name,
+      owner: file.owner,
+      repo: file.repo,
+    }));
+  }, [selectedFiles]);
+
+  // Stable function reference using useCallback
+  const handleGenerate = useCallback(async () => {
+    if (memoizedSelectedFiles.length === 0) {
       setError("Please select at least one file to generate test cases");
+      return;
+    }
+
+    // Check if we have required dependencies
+    if (!sessionId) {
+      setError("Session ID is required. Please authenticate first.");
+      return;
+    }
+
+    if (!repository?.full_name) {
+      setError("Repository information is required");
       return;
     }
 
@@ -64,45 +87,141 @@ const TestCaseGenerator = ({
     const startTime = Date.now();
 
     try {
+      console.log("🧪 Starting test case generation...", {
+        filesCount: memoizedSelectedFiles.length,
+        repository: repository.full_name,
+        config: generationConfig,
+      });
+
       const response = await generateTestCases({
-        files: selectedFiles,
+        files: memoizedSelectedFiles,
         repository: repository.full_name,
         config: generationConfig,
         sessionId,
       });
 
-      setTestCases(response.testCases || response);
+      console.log("✅ Test cases generated:", response);
+
+      const generatedTestCases =
+        response.testCases || response.data || response;
+
+      if (!Array.isArray(generatedTestCases)) {
+        throw new Error(
+          "Invalid response format: expected array of test cases"
+        );
+      }
+
+      setTestCases(generatedTestCases);
       setGenerationTime(Date.now() - startTime);
+      setLastGeneratedFiles(memoizedSelectedFiles);
 
       // Call the callback if provided
       if (onTestCasesGenerated) {
-        onTestCasesGenerated(response.testCases || response);
+        onTestCasesGenerated(generatedTestCases);
       }
+
+      console.log(
+        `✅ Generated ${generatedTestCases.length} test cases in ${Math.round(
+          (Date.now() - startTime) / 1000
+        )}s`
+      );
     } catch (err) {
-      setError(err.message || "Failed to generate test cases");
+      console.error("❌ Test case generation failed:", err);
+
+      let errorMessage = "Failed to generate test cases";
+
+      if (err.message) {
+        errorMessage = err.message;
+      } else if (err.response?.data?.error) {
+        errorMessage = err.response.data.error;
+      } else if (err.response?.data?.message) {
+        errorMessage = err.response.data.message;
+      }
+
+      setError(errorMessage);
     } finally {
       setIsGenerating(false);
     }
-  };
+  }, [
+    memoizedSelectedFiles,
+    repository?.full_name,
+    generationConfig,
+    sessionId,
+    onTestCasesGenerated,
+  ]);
 
-  const handleDownload = async () => {
+  // Auto-generate when files change (optional - remove if you want manual only)
+  useEffect(() => {
+    // Only auto-generate if:
+    // 1. We have files selected
+    // 2. Files have changed from last generation
+    // 3. We're not currently generating
+    // 4. We have all required data
+
+    const filesChanged =
+      JSON.stringify(memoizedSelectedFiles) !==
+      JSON.stringify(lastGeneratedFiles);
+    const hasRequiredData = sessionId && repository?.full_name;
+    const shouldAutoGenerate =
+      memoizedSelectedFiles.length > 0 &&
+      filesChanged &&
+      !isGenerating &&
+      hasRequiredData;
+
+    if (shouldAutoGenerate) {
+      console.log("🔄 Files changed, auto-generating test cases...");
+      // Add a small delay to debounce rapid changes
+      const timer = setTimeout(() => {
+        handleGenerate();
+      }, 1000);
+
+      return () => clearTimeout(timer);
+    }
+  }, [
+    memoizedSelectedFiles,
+    lastGeneratedFiles,
+    isGenerating,
+    sessionId,
+    repository?.full_name,
+    handleGenerate,
+  ]);
+
+  const handleDownload = useCallback(async () => {
+    if (testCases.length === 0) {
+      setError("No test cases to download");
+      return;
+    }
+
     try {
-      await downloadTestCasesAsJSON(testCases, repository.name);
+      await downloadTestCasesAsJSON(testCases, repository?.name || "testcases");
+      console.log("✅ Test cases downloaded successfully");
     } catch (err) {
+      console.error("❌ Download failed:", err);
       setError("Failed to download test cases");
     }
-  };
+  }, [testCases, repository?.name]);
 
-  const handleCopy = async () => {
-    try {
-      await copyToClipboard(JSON.stringify(testCases, null, 2));
-      // Show success message (you could use a toast notification here)
-    } catch (err) {
-      setError("Failed to copy test cases");
+  const handleCopy = useCallback(async () => {
+    if (testCases.length === 0) {
+      setError("No test cases to copy");
+      return;
     }
-  };
 
-  const getComplexityColor = (complexity) => {
+    try {
+      const success = await copyToClipboard(JSON.stringify(testCases, null, 2));
+      if (success) {
+        console.log("✅ Test cases copied to clipboard");
+        // You could add a toast notification here
+      } else {
+        throw new Error("Copy operation failed");
+      }
+    } catch (err) {
+      console.error("❌ Copy failed:", err);
+      setError("Failed to copy test cases to clipboard");
+    }
+  }, [testCases]);
+
+  const getComplexityColor = useCallback((complexity) => {
     switch (complexity) {
       case "simple":
         return "text-success-600 bg-success-50";
@@ -113,9 +232,9 @@ const TestCaseGenerator = ({
       default:
         return "text-secondary-600 bg-secondary-50";
     }
-  };
+  }, []);
 
-  const getTestTypeIcon = (type) => {
+  const getTestTypeIcon = useCallback((type) => {
     switch (type) {
       case "unit":
         return <Target className="h-4 w-4" />;
@@ -126,7 +245,14 @@ const TestCaseGenerator = ({
       default:
         return <FileText className="h-4 w-4" />;
     }
-  };
+  }, []);
+
+  // Clear error when files change
+  useEffect(() => {
+    if (error && memoizedSelectedFiles.length > 0) {
+      setError(null);
+    }
+  }, [memoizedSelectedFiles.length, error]);
 
   return (
     <div className="bg-white rounded-lg shadow-soft border border-secondary-200">
@@ -302,7 +428,7 @@ const TestCaseGenerator = ({
         <div className="flex items-center justify-between">
           <div>
             <h3 className="text-sm font-medium text-secondary-900">
-              Selected Files ({selectedFiles.length})
+              Selected Files ({memoizedSelectedFiles.length})
             </h3>
             <p className="text-xs text-secondary-600 mt-1">
               Test cases will be generated for these files
@@ -310,7 +436,9 @@ const TestCaseGenerator = ({
           </div>
           <Button
             onClick={handleGenerate}
-            disabled={selectedFiles.length === 0 || isGenerating}
+            disabled={
+              memoizedSelectedFiles.length === 0 || isGenerating || !sessionId
+            }
             className="flex items-center space-x-2"
           >
             {isGenerating ? (
@@ -327,9 +455,9 @@ const TestCaseGenerator = ({
           </Button>
         </div>
 
-        {selectedFiles.length > 0 && (
+        {memoizedSelectedFiles.length > 0 && (
           <div className="mt-3 flex flex-wrap gap-2">
-            {selectedFiles.slice(0, 5).map((file) => (
+            {memoizedSelectedFiles.slice(0, 5).map((file) => (
               <span
                 key={file.path}
                 className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-primary-100 text-primary-800"
@@ -337,9 +465,9 @@ const TestCaseGenerator = ({
                 {file.name}
               </span>
             ))}
-            {selectedFiles.length > 5 && (
+            {memoizedSelectedFiles.length > 5 && (
               <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-secondary-100 text-secondary-800">
-                +{selectedFiles.length - 5} more
+                +{memoizedSelectedFiles.length - 5} more
               </span>
             )}
           </div>
@@ -352,6 +480,16 @@ const TestCaseGenerator = ({
           <div className="flex items-center space-x-2">
             <AlertTriangle className="h-5 w-5 text-error-600" />
             <span className="text-sm text-error-700">{error}</span>
+          </div>
+          <div className="mt-2">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() => setError(null)}
+              className="text-xs"
+            >
+              Dismiss
+            </Button>
           </div>
         </div>
       )}
@@ -427,8 +565,12 @@ const TestCaseGenerator = ({
               Generating Test Cases
             </h3>
             <p className="text-sm text-secondary-600 mt-1">
-              AI is analyzing your code and creating comprehensive test cases...
+              AI is analyzing {memoizedSelectedFiles.length} files and creating
+              comprehensive test cases...
             </p>
+            <div className="mt-2 text-xs text-secondary-500">
+              This may take up to 2 minutes for complex codebases
+            </div>
           </div>
         </div>
       )}
@@ -436,7 +578,7 @@ const TestCaseGenerator = ({
       {/* Empty State */}
       {!isGenerating &&
         testCases.length === 0 &&
-        selectedFiles.length === 0 && (
+        memoizedSelectedFiles.length === 0 && (
           <div className="px-6 py-8 text-center">
             <FileText className="mx-auto h-12 w-12 text-secondary-400" />
             <h3 className="mt-2 text-sm font-medium text-secondary-900">
@@ -447,6 +589,16 @@ const TestCaseGenerator = ({
             </p>
           </div>
         )}
+
+      {/* Debug Info (remove in production) */}
+      {import.meta.env.DEV && (
+        <div className="px-6 py-2 bg-gray-100 border-t text-xs text-gray-600">
+          <div>Session: {sessionId ? "✅" : "❌"}</div>
+          <div>Repository: {repository?.full_name || "Not set"}</div>
+          <div>Files: {memoizedSelectedFiles.length}</div>
+          <div>Generating: {isGenerating ? "Yes" : "No"}</div>
+        </div>
+      )}
     </div>
   );
 };
