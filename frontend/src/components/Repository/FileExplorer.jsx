@@ -1,4 +1,3 @@
-// components/Repository/FileExplorer.jsx
 import React, { useState, useEffect } from "react";
 import {
   Folder,
@@ -20,7 +19,7 @@ import LoadingSpinner from "../UI/LoadingSpinner";
 
 const FileExplorer = ({
   repository,
-  onFileSelect,
+  onFilesSelect, // Changed from onFileSelect to match usage
   selectedFiles = [],
   sessionId,
 }) => {
@@ -42,10 +41,19 @@ const FileExplorer = ({
     setError(null);
 
     try {
+      console.log("🌳 Loading repository tree for:", repository.full_name);
       const tree = await getRepositoryTree(repository.full_name, sessionId);
-      setTreeData(buildTreeStructure(tree));
+      console.log("✅ Tree data received:", tree);
+
+      if (Array.isArray(tree)) {
+        setTreeData(buildTreeStructure(tree));
+      } else {
+        console.error("❌ Invalid tree data format:", tree);
+        setError("Invalid repository structure received");
+      }
     } catch (err) {
-      setError(err.response?.data?.error || "Failed to load repository files");
+      console.error("❌ Error loading repository tree:", err);
+      setError(err.message || "Failed to load repository files");
     } finally {
       setLoading(false);
     }
@@ -108,17 +116,17 @@ const FileExplorer = ({
       ? selectedFiles.filter((f) => f.path !== file.path)
       : [...selectedFiles, file];
 
-    onFileSelect(updatedFiles);
+    onFilesSelect(updatedFiles);
   };
 
   const selectAll = () => {
     const allFiles = getAllFiles(treeData);
     const filteredFiles = filterFiles(allFiles);
-    onFileSelect(filteredFiles);
+    onFilesSelect(filteredFiles);
   };
 
   const deselectAll = () => {
-    onFileSelect([]);
+    onFilesSelect([]);
   };
 
   const getAllFiles = (nodes) => {

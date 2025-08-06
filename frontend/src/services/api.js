@@ -224,44 +224,69 @@ export const getUserRepositories = async (sessionId) => {
       headers: { Authorization: `Bearer ${sessionId}` },
     });
 
-    // Detailed response logging
-    console.log("🔍 Full API Response:", response);
-    console.log("🔍 Response type:", typeof response);
-    console.log("🔍 Is response an array?", Array.isArray(response));
+    console.log("🔍 Raw API Response:", response);
 
-    if (response && typeof response === "object" && !Array.isArray(response)) {
-      console.log("🔍 Response keys:", Object.keys(response));
-    }
-
-    // Handle the nested response structure from your backend
-    if (response && response.repositories) {
-      console.log("🔍 Found nested repositories:", response.repositories);
-      console.log("🔍 Repositories count:", response.repositories.length);
-      if (response.repositories.length > 0) {
-        console.log("🔍 First repository sample:", response.repositories[0]);
+    // Improved response handling to match your backend structure
+    if (response && response.success) {
+      // If the response indicates success and has repos
+      if (Array.isArray(response.repos)) {
+        console.log(
+          "✅ Found repositories in response.repos:",
+          response.repos.length
+        );
+        return {
+          success: true,
+          repos: response.repos,
+        };
       }
-      return response.repositories;
+      // If repositories are directly in the response data
+      if (Array.isArray(response.repositories)) {
+        console.log(
+          "✅ Found repositories in response.repositories:",
+          response.repositories.length
+        );
+        return {
+          success: true,
+          repos: response.repositories,
+        };
+      }
     }
 
-    // If response is already an array (different API structure)
+    // If response is already an array (direct repository list)
     if (Array.isArray(response)) {
-      console.log("🔍 Response is already an array:", response.length);
-      return response;
+      console.log("✅ Response is direct array:", response.length);
+      return {
+        success: true,
+        repos: response,
+      };
     }
 
-    // If repositories are in a different nested structure
-    if (response.data && Array.isArray(response.data)) {
+    // If repositories are nested in data
+    if (response && response.data && Array.isArray(response.data)) {
       console.log(
-        "🔍 Found repositories in response.data:",
+        "✅ Found repositories in response.data:",
         response.data.length
       );
-      return response.data;
+      return {
+        success: true,
+        repos: response.data,
+      };
     }
 
-    // Log what we actually got and return empty array
-    console.warn("🚨 Unexpected response structure:", response);
-    console.warn("🚨 Returning empty array as fallback");
-    return [];
+    // Handle error responses
+    if (response && !response.success && response.error) {
+      throw new Error(response.error);
+    }
+
+    // Log what we actually got and return empty but successful response
+    console.warn(
+      "🚨 Unexpected response structure, returning empty repos:",
+      response
+    );
+    return {
+      success: true,
+      repos: [],
+    };
   } catch (error) {
     console.error("❌ Failed to fetch repositories:", error.message);
     throw error;
@@ -290,7 +315,18 @@ export const getRepositoryTree = async (
       headers: { Authorization: `Bearer ${sessionId}` },
     });
 
-    return response.tree || response; // Handle different response formats
+    // Handle different response formats
+    if (response && response.tree) {
+      return response.tree;
+    }
+    if (Array.isArray(response)) {
+      return response;
+    }
+    if (response && response.data && Array.isArray(response.data)) {
+      return response.data;
+    }
+
+    throw new Error("Invalid tree response format");
   } catch (error) {
     console.error("❌ Failed to fetch repository tree:", error.message);
     throw error;

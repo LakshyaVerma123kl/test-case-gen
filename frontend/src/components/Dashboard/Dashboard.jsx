@@ -62,23 +62,35 @@ const Dashboard = ({ user, sessionId }) => {
   const loadRepositories = async () => {
     try {
       setLoading(true);
-      setError(null); // Clear previous errors
+      setError(null);
+
+      console.log("🔄 Loading repositories...");
       const response = await getUserRepositories(sessionId);
-      if (response.success) {
-        // Ensure response.repos is an array, default to empty array if not present
-        setRepositories(response.repos || []);
-      } else {
-        // If API indicates success: false, set an error message and ensure repositories is an array
-        setError(response.message || "Failed to load repositories.");
-        setRepositories([]);
+
+      console.log("📊 Repository response:", response);
+
+      // Handle different response formats from the API
+      let repoData = [];
+
+      if (Array.isArray(response)) {
+        repoData = response;
+      } else if (
+        response &&
+        response.success &&
+        Array.isArray(response.repos)
+      ) {
+        repoData = response.repos;
+      } else if (response && Array.isArray(response.repositories)) {
+        repoData = response.repositories;
+      } else if (response && response.data && Array.isArray(response.data)) {
+        repoData = response.data;
       }
+
+      console.log("✅ Processed repository data:", repoData);
+      setRepositories(repoData);
     } catch (error) {
-      console.error("Error loading repositories:", error);
-      // Set error message from the thrown error and ensure repositories is an array
-      setError(
-        error.message ||
-          "An unexpected error occurred while loading repositories."
-      );
+      console.error("❌ Error loading repositories:", error);
+      setError(error.message || "Failed to load repositories");
       setRepositories([]);
     } finally {
       setLoading(false);
@@ -116,7 +128,6 @@ const Dashboard = ({ user, sessionId }) => {
     setTestSummaries(null);
     setGeneratedTests([]);
     setError(null);
-    // Reload repositories when resetting to step 1, in case they failed to load initially
     loadRepositories();
   };
 
@@ -133,12 +144,12 @@ const Dashboard = ({ user, sessionId }) => {
     );
   }
 
-  if (error) {
+  if (error && repositories.length === 0) {
     return (
       <div className="text-center py-12">
         <div className="bg-error-50 border border-error-200 rounded-lg p-6 max-w-md mx-auto">
           <p className="text-error-800 mb-4">{error}</p>
-          <Button onClick={loadRepositories} variant="error">
+          <Button onClick={loadRepositories} variant="outline">
             Try Again
           </Button>
         </div>
@@ -164,7 +175,6 @@ const Dashboard = ({ user, sessionId }) => {
           {steps.map((step, index) => {
             const isActive = step.id === currentStep;
             const isCompleted = step.id < currentStep;
-            // const isUpcoming = step.id > currentStep; // This variable is not used
 
             return (
               <div key={step.id} className="flex items-center">
@@ -223,6 +233,8 @@ const Dashboard = ({ user, sessionId }) => {
             repositories={repositories}
             onRepoSelect={handleRepoSelect}
             selectedRepo={selectedRepo}
+            loading={loading}
+            error={error}
           />
         )}
 
@@ -263,7 +275,7 @@ const Dashboard = ({ user, sessionId }) => {
           onClick={handleReset}
           disabled={
             currentStep === 1 && !selectedRepo && selectedFiles.length === 0
-          } // Disable if already at initial state
+          }
         >
           Start Over
         </Button>
@@ -281,7 +293,6 @@ const Dashboard = ({ user, sessionId }) => {
       </div>
 
       {/* Stats Card */}
-      {/* The check `repositories.length > 0` is now safe because `repositories` is always an array. */}
       {repositories.length > 0 && (
         <div className="mt-8 bg-gradient-to-r from-primary-50 to-secondary-50 rounded-lg p-6">
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4 text-center">

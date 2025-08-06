@@ -1,4 +1,3 @@
-// components/TestCases/TestCaseGenerator.jsx
 import React, { useState, useEffect } from "react";
 import {
   Zap,
@@ -25,9 +24,9 @@ import Button from "../UI/Button";
 import LoadingSpinner from "../UI/LoadingSpinner";
 
 const TestCaseGenerator = ({
-  selectedFiles,
+  selectedFiles = [], // Changed from files to selectedFiles to match Dashboard props
   repository,
-  onTestCasesGenerated,
+  onTestCasesGenerated, // Changed from onTestGenerated to match expected function
   sessionId,
 }) => {
   const [isGenerating, setIsGenerating] = useState(false);
@@ -72,11 +71,15 @@ const TestCaseGenerator = ({
         sessionId,
       });
 
-      setTestCases(response.testCases);
+      setTestCases(response.testCases || response);
       setGenerationTime(Date.now() - startTime);
-      onTestCasesGenerated?.(response.testCases);
+
+      // Call the callback if provided
+      if (onTestCasesGenerated) {
+        onTestCasesGenerated(response.testCases || response);
+      }
     } catch (err) {
-      setError(err.response?.data?.error || "Failed to generate test cases");
+      setError(err.message || "Failed to generate test cases");
     } finally {
       setIsGenerating(false);
     }
@@ -308,13 +311,19 @@ const TestCaseGenerator = ({
           <Button
             onClick={handleGenerate}
             disabled={selectedFiles.length === 0 || isGenerating}
-            loading={isGenerating}
             className="flex items-center space-x-2"
           >
-            <Zap className="h-4 w-4" />
-            <span>
-              {isGenerating ? "Generating..." : "Generate Test Cases"}
-            </span>
+            {isGenerating ? (
+              <>
+                <LoadingSpinner size="small" className="mr-2" />
+                Generating...
+              </>
+            ) : (
+              <>
+                <Zap className="h-4 w-4" />
+                <span>Generate Test Cases</span>
+              </>
+            )}
           </Button>
         </div>
 
