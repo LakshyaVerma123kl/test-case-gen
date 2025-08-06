@@ -12,7 +12,7 @@ const testcaseRoutes = require('./routes/testcases');
 
 const app = express();
 
-// ✅ CRITICAL FIX: Use Render's PORT environment variable
+// ✅ CRITICAL FIX: Use Render's dynamic PORT (don't hardcode)
 const PORT = process.env.PORT || 5000;
 
 // -------------------- Trust Proxy (important for deployed apps) --------------------
@@ -153,7 +153,7 @@ app.get('/api/health', (req, res) => {
     uptime: process.uptime(),
     memory: process.memoryUsage(),
     nodeVersion: process.version,
-    port: PORT, // ✅ Show the actual port being used
+    port: PORT, // Show actual port being used
   });
 });
 
@@ -165,7 +165,6 @@ app.get('/api', (req, res) => {
     status: 'OK',
     timestamp: new Date().toISOString(),
     environment: process.env.NODE_ENV || 'development',
-    port: PORT, // ✅ Show the actual port
     endpoints: {
       health: 'GET /api/health',
       auth: {
@@ -307,14 +306,19 @@ const gracefulShutdown = (signal) => {
 process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
 process.on('SIGINT', () => gracefulShutdown('SIGINT'));
 
-// ✅ CRITICAL FIX: Listen on 0.0.0.0 and use Render's PORT
+// ✅ CRITICAL FIX: Listen on 0.0.0.0 and use dynamic PORT
 const server = app.listen(PORT, '0.0.0.0', () => {
   console.log('🚀 ================================');
   console.log(`🚀 Server running on port ${PORT}`);
   console.log(`🚀 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`🚀 API Base URL: http://localhost:${PORT}/api`);
-  console.log(`🩺 Health check: http://localhost:${PORT}/api/health`);
-  console.log(`📚 Documentation: http://localhost:${PORT}/api`);
+  // ✅ FIX: Don't use hardcoded localhost in production
+  const baseUrl =
+    process.env.NODE_ENV === 'production'
+      ? `https://your-app-name.onrender.com`
+      : `http://localhost:${PORT}`;
+  console.log(`🚀 API Base URL: ${baseUrl}/api`);
+  console.log(`🩺 Health check: ${baseUrl}/api/health`);
+  console.log(`📚 Documentation: ${baseUrl}/api`);
   console.log('🚀 ================================');
 
   // Log configuration in development
@@ -329,8 +333,8 @@ const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`   - Gemini API: ${!!process.env.GEMINI_API_KEY}`);
   }
 
-  // ✅ Log the actual port being used (for debugging)
-  console.log(`✅ Server successfully bound to port ${PORT}`);
+  // ✅ Log successful port binding (critical for Render)
+  console.log(`✅ Server successfully bound to port ${PORT} on all interfaces (0.0.0.0)`);
 });
 
 // Handle server errors
@@ -339,6 +343,9 @@ server.on('error', (error) => {
 
   if (error.code === 'EADDRINUSE') {
     console.error(`Port ${PORT} is already in use`);
+    process.exit(1);
+  } else if (error.code === 'EACCES') {
+    console.error(`Permission denied to bind to port ${PORT}`);
     process.exit(1);
   }
 });
