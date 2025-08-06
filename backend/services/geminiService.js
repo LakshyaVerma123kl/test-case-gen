@@ -7,8 +7,10 @@ class GeminiService {
     }
 
     this.genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
+
+    // Updated to use the correct model name
     this.model = this.genAI.getGenerativeModel({
-      model: 'gemini-pro',
+      model: 'gemini-1.5-flash', // Changed from 'gemini-pro'
       generationConfig: {
         temperature: 0.7,
         topK: 40,
@@ -24,8 +26,53 @@ class GeminiService {
           category: 'HARM_CATEGORY_HATE_SPEECH',
           threshold: 'BLOCK_MEDIUM_AND_ABOVE',
         },
+        {
+          category: 'HARM_CATEGORY_SEXUALLY_EXPLICIT',
+          threshold: 'BLOCK_MEDIUM_AND_ABOVE',
+        },
+        {
+          category: 'HARM_CATEGORY_DANGEROUS_CONTENT',
+          threshold: 'BLOCK_MEDIUM_AND_ABOVE',
+        },
       ],
     });
+  }
+
+  /**
+   * Test connection to Gemini API
+   */
+  async testConnection() {
+    try {
+      const result = await this.model.generateContent('Hello, this is a test.');
+      const response = await result.response;
+      return {
+        success: true,
+        model: 'gemini-1.5-flash',
+        message: 'Connection successful',
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error: error.message,
+        suggestion: this.getErrorSuggestion(error),
+      };
+    }
+  }
+
+  /**
+   * Get error suggestion based on error type
+   */
+  getErrorSuggestion(error) {
+    if (error.message.includes('not found') || error.message.includes('404')) {
+      return 'Model not found. Try updating to gemini-1.5-flash or gemini-1.5-pro';
+    }
+    if (error.message.includes('API key')) {
+      return 'Check your GEMINI_API_KEY environment variable';
+    }
+    if (error.message.includes('quota') || error.message.includes('limit')) {
+      return 'API quota exceeded. Check your billing or try again later';
+    }
+    return 'Unknown error. Check your network connection and API key';
   }
 
   /**
@@ -36,65 +83,37 @@ class GeminiService {
    */
   async generateTestCases(files, config = {}) {
     try {
+      // Validate inputs
+      if (!files || files.length === 0) {
+        throw new Error('No files provided for test generation');
+      }
+
       const prompt = this.buildTestGenerationPrompt(files, config);
 
+      console.log('🤖 Sending request to Gemini API...');
       const result = await this.model.generateContent(prompt);
       const response = await result.response;
       const text = response.text();
 
+      console.log('✅ Received response from Gemini API');
       return this.parseTestCasesResponse(text, files, config);
     } catch (error) {
-      console.error('Gemini API Error:', error);
+      console.error('Gemini API Error:', error.message);
+
+      // Enhanced error logging
+      if (error.message.includes('not found')) {
+        console.error('❌ Model not found. The gemini-pro model has been deprecated.');
+        console.log('💡 Suggestion: Update to gemini-1.5-flash or gemini-1.5-pro');
+      }
 
       // Return fallback test cases if AI fails
-      console.log('Falling back to template test cases');
-      return this.createFallbackTestCases('AI generation failed', files, config);
+      console.log('🔄 Falling back to template test cases');
+      return this.createFallbackTestCases('AI generation failed: ' + error.message, files, config);
     }
   }
 
   /**
-   * Generate summary and insights for test cases
-   * @param {Array} testCases - Array of test case objects
-   * @param {Object} metadata - Additional metadata
-   * @returns {Promise<Object>} Summary and insights
-   */
-  async generateSummary(testCases, metadata = {}) {
-    try {
-      const prompt = this.buildSummaryPrompt(testCases, metadata);
-
-      const result = await this.model.generateContent(prompt);
-      const response = await result.response;
-      const text = response.text();
-
-      return this.parseSummaryResponse(text, testCases);
-    } catch (error) {
-      console.error('Gemini Summary Error:', error);
-      return this.createFallbackSummary(testCases);
-    }
-  }
-
-  /**
-   * Analyze code complexity and provide recommendations
-   * @param {Array} files - Array of file objects
-   * @returns {Promise<Object>} Code analysis results
-   */
-  async analyzeCode(files) {
-    try {
-      const prompt = this.buildCodeAnalysisPrompt(files);
-
-      const result = await this.model.generateContent(prompt);
-      const response = await result.response;
-      const text = response.text();
-
-      return this.parseCodeAnalysisResponse(text, files);
-    } catch (error) {
-      console.error('Gemini Code Analysis Error:', error);
-      return this.createFallbackAnalysis(files);
-    }
-  }
-
-  /**
-   * Build prompt for test case generation
+   * Build prompt for test case generation with improved structure
    */
   buildTestGenerationPrompt(files, config) {
     const { types = ['unit'], complexity = 'medium', framework = 'auto' } = config;
@@ -102,40 +121,48 @@ class GeminiService {
     const codeContext = files
       .map(
         (file) => `
-File: ${file.path}
-Language: ${this.detectLanguage(file.path)}
-Content:
-\`\`\`
-${file.content?.substring(0, 4000) || 'Content not available'}
+📁 File: ${file.path}
+🔤 Language: ${this.detectLanguage(file.path)}
+📝 Content:
+\`\`\`${this.detectLanguage(file.path)}
+${file.content?.substring(0, 3000) || 'Content not available'}
 \`\`\`
 `
       )
       .join('\n');
 
-    return `You are an expert software testing engineer. Analyze the provided code and generate comprehensive test cases.
+    return `You are an expert software testing engineer. Analyze the provided code and generate comprehensive, practical test cases.
 
 ${codeContext}
 
-Requirements:
+📋 Requirements:
 - Test types: ${types.join(', ')}  
-- Complexity: ${complexity}
+- Complexity level: ${complexity}
 - Framework: ${framework === 'auto' ? 'most appropriate for the language' : framework}
-- Generate practical, executable test cases
+- Generate executable test cases with proper syntax
 - Include edge cases and error handling
-- Follow testing best practices
+- Follow testing best practices and naming conventions
 
-Respond ONLY with valid JSON in this exact format:
+🎯 Focus on:
+- Function inputs/outputs validation
+- Error condition handling
+- Boundary value testing
+- Integration points (if applicable)
+
+⚠️ IMPORTANT: Respond ONLY with valid JSON. No additional text or formatting.
+
+Required JSON format:
 {
   "testCases": [
     {
-      "id": "unique_id",
-      "title": "Test case title",
+      "id": "unique_test_id",
+      "title": "Clear, descriptive test title",
       "description": "What this test validates",
       "type": "unit|integration|e2e",
       "priority": "low|medium|high|critical",
       "file": "source_file_path",
-      "function": "function_name_if_applicable",
-      "code": "complete_test_code_with_framework_syntax",
+      "function": "function_name_being_tested",
+      "code": "complete_executable_test_code",
       "setup": "setup_code_if_needed",
       "teardown": "cleanup_code_if_needed",
       "dependencies": ["dependency1", "dependency2"],
@@ -144,325 +171,308 @@ Respond ONLY with valid JSON in this exact format:
   ]
 }
 
-Generate ${Math.min(files.length * 3, 15)} relevant test cases.`;
+Generate ${Math.min(files.length * 4, 12)} relevant, high-quality test cases.`;
   }
 
   /**
-   * Build prompt for summary generation
-   */
-  buildSummaryPrompt(testCases, metadata) {
-    const testSummary = testCases
-      .map((tc) => `- ${tc.title} (${tc.type}, ${tc.priority}): ${tc.description}`)
-      .join('\n');
-
-    return `Analyze these test cases and provide insights:
-
-Test Cases:
-${testSummary}
-
-Repository: ${metadata.repository || 'Unknown'}
-Files: ${metadata.files?.length || 0}
-
-Respond ONLY with valid JSON:
-{
-  "insights": ["insight1", "insight2", "insight3"],
-  "recommendations": ["recommendation1", "recommendation2"],
-  "coverage": "Overall coverage analysis text",
-  "gaps": ["potential_gap1", "potential_gap2"],
-  "qualityScore": 85,
-  "executionTime": "estimated_time_in_minutes"
-}`;
-  }
-
-  /**
-   * Build prompt for code analysis
-   */
-  buildCodeAnalysisPrompt(files) {
-    const codeSnippets = files
-      .map(
-        (file) => `
-File: ${file.path}
-Size: ${file.size || 0} bytes
-Content Sample:
-\`\`\`
-${file.content?.substring(0, 2000) || 'Content not available'}
-\`\`\`
-`
-      )
-      .join('\n');
-
-    return `Analyze the following code files for complexity, quality, and testing needs:
-
-${codeSnippets}
-
-Respond ONLY with valid JSON:
-{
-  "files": [
-    {
-      "path": "file_path",
-      "complexity": "low|medium|high",
-      "maintainability": "score_0_to_100",
-      "testability": "easy|moderate|difficult",
-      "recommendations": ["rec1", "rec2"],
-      "issues": ["issue1", "issue2"],
-      "metrics": {
-        "linesOfCode": 0,
-        "cyclomaticComplexity": 0,
-        "functions": 0,
-        "classes": 0
-      }
-    }
-  ],
-  "overall": {
-    "averageComplexity": "medium",
-    "totalLines": 0,
-    "riskLevel": "low|medium|high",
-    "testingPriority": "Priority areas for testing"
-  }
-}`;
-  }
-
-  /**
-   * Parse test cases response from AI
+   * Enhanced test case parsing with better error handling
    */
   parseTestCasesResponse(text, files, config) {
     try {
-      // Clean the response and extract JSON
-      const cleanText = text.replace(/```json\n?|\n?```/g, '').trim();
+      // Multiple parsing strategies
+      let parsed = null;
 
-      // Try to find JSON content between curly braces
-      const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
-
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-
-        if (parsed.testCases && Array.isArray(parsed.testCases)) {
-          return parsed.testCases.map((tc, index) => ({
-            id: tc.id || `ai_${Date.now()}_${index}`,
-            title: tc.title || `Test Case ${index + 1}`,
-            description: tc.description || 'AI generated test case',
-            type: tc.type || config.types?.[0] || 'unit',
-            priority: tc.priority || 'medium',
-            file: tc.file || files[0]?.path || 'unknown',
-            function: tc.function || null,
-            code: tc.code || '// Test implementation needed',
-            setup: tc.setup || null,
-            teardown: tc.teardown || null,
-            dependencies: tc.dependencies || [],
-            tags: tc.tags || [],
-            generatedBy: 'gemini-ai',
-            createdAt: new Date().toISOString(),
-          }));
+      // Strategy 1: Direct JSON parsing
+      try {
+        parsed = JSON.parse(text.trim());
+      } catch (e) {
+        // Strategy 2: Extract JSON from markdown code blocks
+        const codeBlockMatch = text.match(/```(?:json)?\s*(\{[\s\S]*?\})\s*```/);
+        if (codeBlockMatch) {
+          parsed = JSON.parse(codeBlockMatch[1]);
         }
       }
 
-      // Fallback parsing - try to extract individual test cases
-      return this.parseAlternativeFormat(text, files, config);
-    } catch (error) {
-      console.error('Error parsing AI response:', error);
-      return this.createFallbackTestCases(text, files, config);
-    }
-  }
-
-  /**
-   * Alternative parsing for non-JSON responses
-   */
-  parseAlternativeFormat(text, files, config) {
-    const testCases = [];
-
-    // Try to extract test case information from text
-    const lines = text.split('\n');
-    let currentTest = {};
-
-    lines.forEach((line, index) => {
-      if (line.toLowerCase().includes('test') && line.includes(':')) {
-        if (Object.keys(currentTest).length > 0) {
-          testCases.push(this.completeTestCase(currentTest, files, config, testCases.length));
-          currentTest = {};
+      // Strategy 3: Find JSON object in text
+      if (!parsed) {
+        const jsonMatch = text.match(/\{[\s\S]*"testCases"[\s\S]*\}/);
+        if (jsonMatch) {
+          parsed = JSON.parse(jsonMatch[0]);
         }
-        currentTest.title = line.replace(/^\d+\.?\s*/, '').trim();
-      } else if (line.toLowerCase().includes('description')) {
-        currentTest.description = line.split(':')[1]?.trim();
-      } else if (line.includes('```') && !currentTest.code) {
-        currentTest.code = '';
-      } else if (currentTest.code !== undefined && !line.includes('```')) {
-        currentTest.code += line + '\n';
       }
-    });
 
-    // Add the last test case
-    if (Object.keys(currentTest).length > 0) {
-      testCases.push(this.completeTestCase(currentTest, files, config, testCases.length));
-    }
+      if (parsed && parsed.testCases && Array.isArray(parsed.testCases)) {
+        console.log(`✅ Successfully parsed ${parsed.testCases.length} test cases`);
 
-    return testCases.length > 0 ? testCases : this.createFallbackTestCases(text, files, config);
-  }
-
-  /**
-   * Complete a partial test case with defaults
-   */
-  completeTestCase(testCase, files, config, index) {
-    const language = this.detectLanguage(files[0]?.path || '');
-    const framework = this.getDefaultFramework(language);
-
-    return {
-      id: `parsed_${Date.now()}_${index}`,
-      title: testCase.title || `Test Case ${index + 1}`,
-      description: testCase.description || 'Parsed from AI response',
-      type: config.types?.[0] || 'unit',
-      priority: 'medium',
-      file: files[0]?.path || 'unknown',
-      function: null,
-      code:
-        testCase.code ||
-        this.generateTemplateCode(language, framework, config.types?.[0] || 'unit', files[0]),
-      setup: null,
-      teardown: null,
-      dependencies: this.getFrameworkDependencies(framework),
-      tags: [],
-      generatedBy: 'gemini-ai-parsed',
-      createdAt: new Date().toISOString(),
-    };
-  }
-
-  /**
-   * Parse summary response from AI
-   */
-  parseSummaryResponse(text, testCases) {
-    try {
-      const cleanText = text.replace(/```json\n?|\n?```/g, '').trim();
-      const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
-
-      if (jsonMatch) {
-        const parsed = JSON.parse(jsonMatch[0]);
-        return {
-          insights: parsed.insights || [],
-          recommendations: parsed.recommendations || [],
-          coverage: parsed.coverage || 'Analysis not available',
-          gaps: parsed.gaps || [],
-          qualityScore: parsed.qualityScore || 75,
-          executionTime: parsed.executionTime || '15-30 minutes',
-        };
+        return parsed.testCases.map((tc, index) => ({
+          id: tc.id || `ai_${Date.now()}_${index}`,
+          title: tc.title || `Test Case ${index + 1}`,
+          description: tc.description || 'AI generated test case',
+          type: tc.type || config.types?.[0] || 'unit',
+          priority: tc.priority || 'medium',
+          file: tc.file || files[0]?.path || 'unknown',
+          function: tc.function || this.extractFunctionName(tc.code),
+          code:
+            tc.code ||
+            this.generateTemplateCode(
+              this.detectLanguage(files[0]?.path || ''),
+              this.getDefaultFramework(this.detectLanguage(files[0]?.path || '')),
+              tc.type || 'unit',
+              files[0]
+            ),
+          setup: tc.setup || null,
+          teardown: tc.teardown || null,
+          dependencies:
+            tc.dependencies ||
+            this.getFrameworkDependencies(
+              this.getDefaultFramework(this.detectLanguage(files[0]?.path || ''))
+            ),
+          tags: tc.tags || [this.detectLanguage(files[0]?.path || '')],
+          generatedBy: 'gemini-ai',
+          createdAt: new Date().toISOString(),
+          aiResponse: text.substring(0, 100) + '...', // For debugging
+        }));
       }
+
+      throw new Error('Invalid response format');
     } catch (error) {
-      console.error('Error parsing summary response:', error);
+      console.error('❌ Error parsing AI response:', error.message);
+      console.log('📄 Raw response preview:', text.substring(0, 200) + '...');
+      return this.createFallbackTestCases('Parsing failed: ' + error.message, files, config);
     }
-
-    // Fallback summary
-    return this.createFallbackSummary(testCases);
   }
 
   /**
-   * Parse code analysis response from AI
+   * Extract function name from test code
    */
-  parseCodeAnalysisResponse(text, files) {
-    try {
-      const cleanText = text.replace(/```json\n?|\n?```/g, '').trim();
-      const jsonMatch = cleanText.match(/\{[\s\S]*\}/);
+  extractFunctionName(code) {
+    if (!code) return null;
 
-      if (jsonMatch) {
-        return JSON.parse(jsonMatch[0]);
-      }
-    } catch (error) {
-      console.error('Error parsing code analysis response:', error);
+    // Look for common test patterns
+    const patterns = [
+      /describe\(['"`]([^'"`]+)['"`]/,
+      /test\(['"`]([^'"`]+)['"`]/,
+      /it\(['"`]([^'"`]+)['"`]/,
+      /def\s+test_([a-zA-Z_][a-zA-Z0-9_]*)/,
+      /@Test[^a-zA-Z]*([a-zA-Z_][a-zA-Z0-9_]*)/,
+    ];
+
+    for (const pattern of patterns) {
+      const match = code.match(pattern);
+      if (match) return match[1];
     }
 
-    // Fallback analysis
-    return this.createFallbackAnalysis(files);
+    return null;
   }
 
   /**
-   * Create fallback test cases when AI parsing fails
+   * Enhanced fallback test cases with better templates
    */
-  createFallbackTestCases(text, files, config) {
+  createFallbackTestCases(reason, files, config) {
     const testCases = [];
+    console.log(`🔄 Creating fallback test cases. Reason: ${reason}`);
 
-    files.forEach((file, index) => {
+    files.forEach((file, fileIndex) => {
       const language = this.detectLanguage(file.path);
       const framework = this.getDefaultFramework(language);
-
       const types = config.types || ['unit'];
 
-      types.forEach((type, typeIndex) => {
-        testCases.push({
-          id: `fallback_${Date.now()}_${index}_${typeIndex}`,
-          title: `${type} test for ${file.name || file.path}`,
-          description: `Generated ${type} test case for ${file.path}`,
-          type,
-          priority: 'medium',
-          file: file.path,
-          function: null,
-          code: this.generateTemplateCode(language, framework, type, file),
-          setup: null,
-          teardown: null,
-          dependencies: this.getFrameworkDependencies(framework),
-          tags: [language, framework],
-          generatedBy: 'fallback',
-          createdAt: new Date().toISOString(),
+      // Analyze file content for functions/classes
+      const functions = this.extractFunctionsFromCode(file.content, language);
+
+      if (functions.length > 0) {
+        // Create tests for each function
+        functions.slice(0, 3).forEach((func, funcIndex) => {
+          types.forEach((type, typeIndex) => {
+            testCases.push({
+              id: `fallback_${Date.now()}_${fileIndex}_${funcIndex}_${typeIndex}`,
+              title: `Test ${func.name} function - ${type}`,
+              description: `${type} test for ${func.name} function in ${file.path}`,
+              type,
+              priority: func.isExported ? 'high' : 'medium',
+              file: file.path,
+              function: func.name,
+              code: this.generateFunctionTestCode(language, framework, type, func, file),
+              setup: null,
+              teardown: null,
+              dependencies: this.getFrameworkDependencies(framework),
+              tags: [language, framework, 'fallback'],
+              generatedBy: 'fallback-function-based',
+              createdAt: new Date().toISOString(),
+            });
+          });
         });
-      });
+      } else {
+        // Create generic file tests
+        types.forEach((type, typeIndex) => {
+          testCases.push({
+            id: `fallback_generic_${Date.now()}_${fileIndex}_${typeIndex}`,
+            title: `${type} test for ${file.name || file.path}`,
+            description: `Generated ${type} test case for ${file.path}`,
+            type,
+            priority: 'medium',
+            file: file.path,
+            function: null,
+            code: this.generateTemplateCode(language, framework, type, file),
+            setup: null,
+            teardown: null,
+            dependencies: this.getFrameworkDependencies(framework),
+            tags: [language, framework, 'fallback'],
+            generatedBy: 'fallback-generic',
+            createdAt: new Date().toISOString(),
+          });
+        });
+      }
     });
 
+    console.log(`✅ Created ${testCases.length} fallback test cases`);
     return testCases;
   }
 
   /**
-   * Create fallback summary
+   * Extract functions from code based on language
    */
-  createFallbackSummary(testCases) {
-    const types = {};
-    const priorities = {};
+  extractFunctionsFromCode(content, language) {
+    if (!content) return [];
 
-    testCases.forEach((tc) => {
-      types[tc.type] = (types[tc.type] || 0) + 1;
-      priorities[tc.priority] = (priorities[tc.priority] || 0) + 1;
+    const functions = [];
+    const patterns = {
+      javascript: [
+        /function\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g,
+        /const\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*(?:\([^)]*\)\s*=>|function)/g,
+        /([a-zA-Z_][a-zA-Z0-9_]*)\s*:\s*function/g,
+        /export\s+(?:function\s+)?([a-zA-Z_][a-zA-Z0-9_]*)/g,
+      ],
+      python: [/def\s+([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g],
+      java: [
+        /(?:public|private|protected)?\s*(?:static\s+)?(?:\w+\s+)*([a-zA-Z_][a-zA-Z0-9_]*)\s*\(/g,
+      ],
+    };
+
+    const languagePatterns = patterns[language] || patterns.javascript;
+
+    languagePatterns.forEach((pattern) => {
+      let match;
+      while ((match = pattern.exec(content)) !== null) {
+        const name = match[1];
+        if (name && !functions.some((f) => f.name === name)) {
+          functions.push({
+            name,
+            isExported: content.includes(`export`) && content.includes(name),
+            language,
+          });
+        }
+      }
     });
 
-    return {
-      insights: [
-        `Generated ${testCases.length} test cases`,
-        `Test types: ${Object.keys(types).join(', ')}`,
-        `Most common priority: ${Object.entries(priorities).sort((a, b) => b[1] - a[1])[0]?.[0] || 'medium'}`,
-      ],
-      recommendations: [
-        'Review and customize generated test cases',
-        'Add specific assertions for your business logic',
-        'Consider adding more edge case tests',
-      ],
-      coverage: `Test suite includes ${Object.keys(types).length} test types focusing on ${Object.entries(types).sort((a, b) => b[1] - a[1])[0]?.[0] || 'unit'} testing.`,
-      gaps: [],
-      qualityScore: Math.min(85, Math.max(60, testCases.length * 5)),
-      executionTime: `${Math.ceil(testCases.length * 2)} minutes`,
-    };
+    return functions.slice(0, 5); // Limit to 5 functions per file
   }
 
   /**
-   * Create fallback code analysis
+   * Generate test code for specific functions
    */
-  createFallbackAnalysis(files) {
-    return {
-      files: files.map((file) => ({
-        path: file.path,
-        complexity: 'medium',
-        maintainability: 75,
-        testability: 'moderate',
-        recommendations: ['Add unit tests', 'Consider refactoring large functions'],
-        issues: [],
-        metrics: {
-          linesOfCode: file.content?.split('\n').length || 0,
-          cyclomaticComplexity: 5,
-          functions: (file.content?.match(/function|def|class/g) || []).length,
-          classes: (file.content?.match(/class /g) || []).length,
-        },
-      })),
-      overall: {
-        averageComplexity: 'medium',
-        totalLines: files.reduce((sum, file) => sum + (file.content?.split('\n').length || 0), 0),
-        riskLevel: 'low',
-        testingPriority: 'Focus on core business logic and public APIs',
+  generateFunctionTestCode(language, framework, type, func, file) {
+    const templates = {
+      javascript: {
+        jest: `const { ${func.name} } = require('./${file.path.replace(/\.[^/.]+$/, '')}');
+
+describe('${func.name}', () => {
+  test('should execute without errors', () => {
+    // Test basic functionality
+    expect(typeof ${func.name}).toBe('function');
+  });
+
+  test('should handle valid inputs', () => {
+    // TODO: Add test with valid inputs
+    // const result = ${func.name}(/* valid params */);
+    // expect(result).toBeDefined();
+  });
+
+  test('should handle edge cases', () => {
+    // TODO: Add edge case tests
+    // expect(() => ${func.name}(null)).toThrow();
+  });
+});`,
+      },
+      python: {
+        pytest: `from ${file.path.replace(/\.py$/, '').replace(/\//g, '.')} import ${func.name}
+
+def test_${func.name}_basic():
+    """Test basic functionality of ${func.name}"""
+    # TODO: Implement test
+    assert callable(${func.name})
+
+def test_${func.name}_valid_input():
+    """Test ${func.name} with valid inputs"""
+    # TODO: Add test with valid inputs
+    # result = ${func.name}(valid_param)
+    # assert result is not None
+
+def test_${func.name}_edge_cases():
+    """Test ${func.name} edge cases"""
+    # TODO: Add edge case tests
+    pass`,
       },
     };
+
+    return (
+      templates[language]?.[framework] ||
+      `// TODO: Implement ${type} test for ${func.name} function in ${file.path}`
+    );
   }
+
+  /**
+   * Enhanced template code generation
+   */
+  generateTemplateCode(language, framework, type, file) {
+    const templates = {
+      javascript: {
+        jest: `describe('${file.name || file.path}', () => {
+  test('should load module without errors', () => {
+    // Test module loading
+    expect(() => require('./${file.path.replace(/\.[^/.]+$/, '')}')).not.toThrow();
+  });
+
+  test('should export expected functions/objects', () => {
+    const module = require('./${file.path.replace(/\.[^/.]+$/, '')}');
+    expect(module).toBeDefined();
+    // TODO: Add specific export checks
+  });
+
+  test('should handle basic operations', () => {
+    // TODO: Implement specific functionality tests
+    expect(true).toBe(true);
+  });
+});`,
+      },
+      python: {
+        pytest: `import pytest
+from ${file.path.replace(/\.py$/, '').replace(/\//g, '.')} import *
+
+def test_module_imports():
+    """Test that module imports without errors"""
+    # Module should import successfully
+    assert True
+
+def test_basic_functionality():
+    """Test basic module functionality"""
+    # TODO: Implement specific tests
+    assert True
+
+def test_edge_cases():
+    """Test edge cases and error handling"""
+    # TODO: Add edge case tests
+    pass`,
+      },
+    };
+
+    return (
+      templates[language]?.[framework] ||
+      `// TODO: Implement ${type} test for ${file.path}\n// Framework: ${framework}\n// Language: ${language}`
+    );
+  }
+
+  // ... (keep all other existing methods like detectLanguage, getDefaultFramework, etc.)
 
   /**
    * Detect programming language from file extension
@@ -485,7 +495,7 @@ Respond ONLY with valid JSON:
       rs: 'rust',
       swift: 'swift',
     };
-    return languageMap[ext] || 'unknown';
+    return languageMap[ext] || 'javascript';
   }
 
   /**
@@ -503,7 +513,7 @@ Respond ONLY with valid JSON:
       go: 'testing',
       rust: 'cargo test',
     };
-    return frameworkMap[language] || 'generic';
+    return frameworkMap[language] || 'jest';
   }
 
   /**
@@ -520,53 +530,6 @@ Respond ONLY with valid JSON:
       rspec: ['rspec'],
     };
     return deps[framework] || [];
-  }
-
-  /**
-   * Generate template code for fallback cases
-   */
-  generateTemplateCode(language, framework, type, file) {
-    const templates = {
-      javascript: {
-        jest: `describe('${file.name || file.path}', () => {
-  test('should work correctly', () => {
-    // TODO: Implement test
-    expect(true).toBe(true);
-  });
-
-  test('should handle edge cases', () => {
-    // TODO: Add edge case tests
-    expect(true).toBeTruthy();
-  });
-});`,
-      },
-      python: {
-        pytest: `def test_${file.name?.replace(/[^a-zA-Z0-9]/g, '_') || 'module'}():
-    """Test basic functionality"""
-    # TODO: Implement test
-    assert True
-
-def test_${file.name?.replace(/[^a-zA-Z0-9]/g, '_') || 'module'}_edge_cases():
-    """Test edge cases"""
-    # TODO: Add edge case tests
-    assert True`,
-      },
-      java: {
-        junit: `@Test
-public void testBasicFunctionality() {
-    // TODO: Implement test
-    assertTrue(true);
-}
-
-@Test
-public void testEdgeCases() {
-    // TODO: Add edge case tests
-    assertNotNull("");
-}`,
-      },
-    };
-
-    return templates[language]?.[framework] || `// TODO: Implement ${type} test for ${file.path}`;
   }
 }
 
